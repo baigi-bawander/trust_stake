@@ -1,0 +1,21 @@
+[toolchain]
+package_manager = "yarn"
+
+[features]
+resolution = true
+skip-lint = false
+
+[programs.localnet]
+truststake = "3Vc6M8Az9h2GtDmqqhQKURqTKKygNfekQq7PoJris6V2"
+
+[programs.devnet]
+truststake = "3Vc6M8Az9h2GtDmqqhQKURqTKKygNfekQq7PoJris6V2"
+
+[provider]
+cluster = "devnet"
+wallet = "~/.config/solana/id.json"
+
+[scripts]
+test = "cargo test"
+
+[hooks]
