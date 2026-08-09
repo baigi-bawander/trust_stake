@@ -29,6 +29,18 @@ solana-message = "3.0.1"
 solana-transaction = "3.0.2"
 solana-signer = "3.0.0"
 solana-keypair = "3.0.1"
+# Blocking JSON-RPC client for the devnet_demo example. Pinned to the 3.x
+# line (not the newer 4.x) because it depends on solana-message ^3.0.1 and
+# solana-transaction ^3.0.2, matching the versions above; a 4.x client would
+# pull in solana-message/solana-transaction 4.x, a distinct incompatible
+# type from the one built by this crate's tests and examples.
+solana-rpc-client = "3.1.14"
+solana-commitment-config = "3.0.0"
+solana-signature = "3.0.0"
+# The "bincode" feature gates system_instruction::transfer (used by
+# devnet_demo to fund throwaway keypairs); anchor-lang's own dependency on
+# this crate doesn't request it, so it's enabled explicitly here.
+solana-system-interface = { version = "2.0.0", features = ["bincode"] }
 
 
 [lints.rust]
