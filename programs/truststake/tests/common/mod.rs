@@ -8,8 +8,19 @@
 //! The test mint created in [`World::new`] has 6 decimals, matching real
 //! USDC; Phases 2 and 3 inherit it unchanged (docs/DESIGN-v2.md,
 //! "Instruction handlers").
+//!
+//! `mod common;` is textually included into every `tests/test_phaseN.rs`
+//! binary separately, so each one compiles its own private copy of this
+//! whole module. Rust's dead-code lint runs per binary, so a method used
+//! by only one phase's test file (for example `grant_permit`, unused
+//! from `test_phase1.rs`'s side) is flagged as unused there even though
+//! another sibling binary calls it. Same shape of issue as
+//! `instructions.rs`'s `#![allow(ambiguous_glob_reexports)]`: a real
+//! per-binary Rust fact, not a sign of actually-dead code.
+#![allow(dead_code)]
 
 use std::{
+    collections::HashMap,
     env,
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -33,10 +44,10 @@ use solana_transaction_error::TransactionError;
 
 use truststake::{
     constants::{
-        BOND_VAULT_SEED, CONFIG_SEED, INITIAL_ADMIN, MARKETPLACE_SEED, SEED_VERSION, STAKE_SEED,
-        VAULT_SEED,
+        BOND_VAULT_SEED, CONFIG_SEED, INITIAL_ADMIN, MARKETPLACE_SEED, PERMIT_SEED, SEED_VERSION,
+        STAKE_SEED, VAULT_SEED,
     },
-    state::{Config, Marketplace, SellerStake},
+    state::{Config, Marketplace, SellerStake, SlashPermit},
 };
 
 const SOL: u64 = 1_000_000_000;
@@ -148,6 +159,13 @@ pub struct World {
     minted_total: u64,
     stakes: Vec<Pubkey>,
     marketplaces: Vec<Pubkey>,
+    /// Every permit ever successfully granted, by PDA. Deliberately not
+    /// pruned when a permit is released and its account closed:
+    /// `assert_invariants` treats a tracked pubkey with no account behind
+    /// it as released and skips it, and dedupes on push, so re-granting
+    /// at the same (seller, marketplace) address after a release is safe
+    /// to track twice.
+    permits: Vec<Pubkey>,
     token_accounts: Vec<Pubkey>,
 }
 
@@ -217,6 +235,7 @@ impl World {
             minted_total: 0,
             stakes: Vec::new(),
             marketplaces: Vec::new(),
+            permits: Vec::new(),
             token_accounts: Vec::new(),
         }
     }
@@ -251,6 +270,14 @@ impl World {
         Pubkey::find_program_address(&[VAULT_SEED, SEED_VERSION, seller.as_ref()], &self.program_id).0
     }
 
+    pub fn permit_pda(&self, seller: &Pubkey, marketplace: &Pubkey) -> Pubkey {
+        Pubkey::find_program_address(
+            &[PERMIT_SEED, SEED_VERSION, seller.as_ref(), marketplace.as_ref()],
+            &self.program_id,
+        )
+        .0
+    }
+
     // ---- account readers ----
 
     pub fn read_config(&self) -> Config {
@@ -274,6 +301,19 @@ impl World {
         SellerStake::try_deserialize(&mut account.data.as_slice()).expect("valid SellerStake data")
     }
 
+    pub fn read_permit(&self, permit: &Pubkey) -> SlashPermit {
+        let account = self.svm.get_account(permit).expect("permit account must exist");
+        SlashPermit::try_deserialize(&mut account.data.as_slice()).expect("valid SlashPermit data")
+    }
+
+    /// `None` once `release_permit`/`release_permit_early` has closed the
+    /// account; the permit half of `assert_invariants` uses this rather
+    /// than `read_permit` to skip released permits instead of panicking.
+    pub fn try_read_permit(&self, permit: &Pubkey) -> Option<SlashPermit> {
+        let account = self.svm.get_account(permit)?;
+        Some(SlashPermit::try_deserialize(&mut account.data.as_slice()).expect("valid SlashPermit data"))
+    }
+
     pub fn read_token_account(&self, pubkey: &Pubkey) -> spl_token::state::Account {
         let account = self.svm.get_account(pubkey).expect("token account must exist");
         spl_token::state::Account::unpack(&account.data).expect("valid token account data")
@@ -281,6 +321,21 @@ impl World {
 
     pub fn token_balance(&self, pubkey: &Pubkey) -> u64 {
         self.read_token_account(pubkey).amount
+    }
+
+    // ---- clock ----
+
+    /// Advances the harness's `Clock` sysvar by `seconds`, for boundary
+    /// tests on timestamp-gated handlers (`release_permit`'s complaint
+    /// window, and Phase 3's dispute expiry later). LiteSVM does not
+    /// advance wall-clock time on its own between transactions.
+    pub fn warp_seconds(&mut self, seconds: i64) {
+        let mut clock = self.svm.get_sysvar::<Clock>();
+        clock.unix_timestamp = clock
+            .unix_timestamp
+            .checked_add(seconds)
+            .expect("test clock warp must not overflow i64");
+        self.svm.set_sysvar(&clock);
     }
 
     // ---- token test fixtures ----
@@ -769,6 +824,205 @@ impl World {
 
         self.add_stake_raw(seller, accounts, amount)
     }
+
+    pub fn withdraw_stake(&mut self, seller: &Keypair, seller_token_account: Pubkey, amount: u64) -> TransactionResult {
+        let mint = self.mint;
+        let stake_vault = self.stake_vault_pda(&seller.pubkey());
+        self.withdraw_stake_with_accounts(seller, seller_token_account, mint, stake_vault, amount)
+    }
+
+    /// Lower-level variant taking an explicit `mint`, for
+    /// `test_wrong_mint_rejected` / `test_unbound_mint_rejected`.
+    pub fn withdraw_stake_with_mint(
+        &mut self,
+        seller: &Keypair,
+        seller_token_account: Pubkey,
+        mint: Pubkey,
+        amount: u64,
+    ) -> TransactionResult {
+        let stake_vault = self.stake_vault_pda(&seller.pubkey());
+        self.withdraw_stake_with_accounts(seller, seller_token_account, mint, stake_vault, amount)
+    }
+
+    /// Lower-level variant taking an explicit `stake_vault`, for
+    /// `test_fake_vault_rejected`.
+    pub fn withdraw_stake_with_vault(
+        &mut self,
+        seller: &Keypair,
+        seller_token_account: Pubkey,
+        stake_vault: Pubkey,
+        amount: u64,
+    ) -> TransactionResult {
+        let mint = self.mint;
+        self.withdraw_stake_with_accounts(seller, seller_token_account, mint, stake_vault, amount)
+    }
+
+    fn withdraw_stake_with_accounts(
+        &mut self,
+        seller: &Keypair,
+        seller_token_account: Pubkey,
+        mint: Pubkey,
+        stake_vault: Pubkey,
+        amount: u64,
+    ) -> TransactionResult {
+        let stake = self.stake_pda(&seller.pubkey());
+        let (event_authority, program) = event_cpi_accounts(&self.program_id);
+
+        let instruction = Instruction::new_with_bytes(
+            self.program_id,
+            &truststake::instruction::WithdrawStake { amount }.data(),
+            truststake::accounts::WithdrawStakeAccountConstraints {
+                seller: seller.pubkey(),
+                stake,
+                stake_vault,
+                mint,
+                seller_token_account,
+                token_program: spl_token::ID,
+                event_authority,
+                program,
+            }
+            .to_account_metas(None),
+        );
+
+        let result = send(&mut self.svm, &[instruction], &seller.pubkey(), &[seller]);
+        assert_invariants(self);
+        result
+    }
+
+    pub fn grant_permit(&mut self, seller: &Keypair, marketplace: Pubkey, max_slashable: u64) -> TransactionResult {
+        let stake = self.stake_pda(&seller.pubkey());
+        let permit = self.permit_pda(&seller.pubkey(), &marketplace);
+        let (event_authority, program) = event_cpi_accounts(&self.program_id);
+
+        let instruction = Instruction::new_with_bytes(
+            self.program_id,
+            &truststake::instruction::GrantPermit { max_slashable }.data(),
+            truststake::accounts::GrantPermitAccountConstraints {
+                seller: seller.pubkey(),
+                stake,
+                marketplace,
+                permit,
+                system_program: anchor_lang::system_program::ID,
+                event_authority,
+                program,
+            }
+            .to_account_metas(None),
+        );
+
+        let result = send(&mut self.svm, &[instruction], &seller.pubkey(), &[seller]);
+        if result.is_ok() && !self.permits.contains(&permit) {
+            self.permits.push(permit);
+        }
+        assert_invariants(self);
+        result
+    }
+
+    pub fn increase_permit(&mut self, seller: &Keypair, marketplace: Pubkey, delta: u64) -> TransactionResult {
+        let stake = self.stake_pda(&seller.pubkey());
+        let permit = self.permit_pda(&seller.pubkey(), &marketplace);
+        let (event_authority, program) = event_cpi_accounts(&self.program_id);
+
+        let instruction = Instruction::new_with_bytes(
+            self.program_id,
+            &truststake::instruction::IncreasePermit { delta }.data(),
+            truststake::accounts::IncreasePermitAccountConstraints {
+                seller: seller.pubkey(),
+                stake,
+                permit,
+                event_authority,
+                program,
+            }
+            .to_account_metas(None),
+        );
+
+        let result = send(&mut self.svm, &[instruction], &seller.pubkey(), &[seller]);
+        assert_invariants(self);
+        result
+    }
+
+    pub fn revoke_permit(&mut self, seller: &Keypair, marketplace: Pubkey) -> TransactionResult {
+        let permit = self.permit_pda(&seller.pubkey(), &marketplace);
+        let (event_authority, program) = event_cpi_accounts(&self.program_id);
+
+        let instruction = Instruction::new_with_bytes(
+            self.program_id,
+            &truststake::instruction::RevokePermit {}.data(),
+            truststake::accounts::RevokePermitAccountConstraints {
+                seller: seller.pubkey(),
+                permit,
+                event_authority,
+                program,
+            }
+            .to_account_metas(None),
+        );
+
+        let result = send(&mut self.svm, &[instruction], &seller.pubkey(), &[seller]);
+        assert_invariants(self);
+        result
+    }
+
+    /// `caller` may be any funded keypair: `release_permit` is
+    /// permissionless by design. `seller` is passed separately (rather
+    /// than derived) because the whole point of this handler is that it
+    /// need not be a signer.
+    pub fn release_permit(&mut self, caller: &Keypair, seller: Pubkey, marketplace: Pubkey) -> TransactionResult {
+        let stake = self.stake_pda(&seller);
+        let permit = self.permit_pda(&seller, &marketplace);
+        let (event_authority, program) = event_cpi_accounts(&self.program_id);
+
+        let instruction = Instruction::new_with_bytes(
+            self.program_id,
+            &truststake::instruction::ReleasePermit {}.data(),
+            truststake::accounts::ReleasePermitAccountConstraints {
+                caller: caller.pubkey(),
+                seller,
+                permit,
+                stake,
+                event_authority,
+                program,
+            }
+            .to_account_metas(None),
+        );
+
+        let result = send(&mut self.svm, &[instruction], &caller.pubkey(), &[caller]);
+        assert_invariants(self);
+        result
+    }
+
+    pub fn release_permit_early(
+        &mut self,
+        seller: &Keypair,
+        authority: &Keypair,
+        marketplace: Pubkey,
+    ) -> TransactionResult {
+        let stake = self.stake_pda(&seller.pubkey());
+        let permit = self.permit_pda(&seller.pubkey(), &marketplace);
+        let (event_authority, program) = event_cpi_accounts(&self.program_id);
+
+        let instruction = Instruction::new_with_bytes(
+            self.program_id,
+            &truststake::instruction::ReleasePermitEarly {}.data(),
+            truststake::accounts::ReleasePermitEarlyAccountConstraints {
+                seller: seller.pubkey(),
+                authority: authority.pubkey(),
+                marketplace,
+                permit,
+                stake,
+                event_authority,
+                program,
+            }
+            .to_account_metas(None),
+        );
+
+        let result = send(
+            &mut self.svm,
+            &[instruction],
+            &seller.pubkey(),
+            &[seller, authority],
+        );
+        assert_invariants(self);
+        result
+    }
 }
 
 fn assert_rent_exempt(world: &World, pubkey: &Pubkey) {
@@ -784,15 +1038,45 @@ fn assert_rent_exempt(world: &World, pubkey: &Pubkey) {
 }
 
 /// Checked after every `World` method (docs/TESTING.md, "Invariants").
-/// Phase 1 has no permits or disputes yet, so only the subset of
-/// invariants that already have a subject to check applies: the rest
-/// (permit bounds, bond-pool-matches-records with real bonds, and so on)
-/// hold vacuously until Phase 2/3 add the accounts they're about.
+/// Phase 1 had no permits or disputes yet, so it could only check the
+/// weaker `committed <= staked` bound; Phase 2 adds `grant_permit` and
+/// friends, which is what `committed` is actually supposed to track, so
+/// the stronger equality below replaces it. Bond-pool-matches-records
+/// with real bonds still holds vacuously until Phase 3.
 pub fn assert_invariants(world: &World) {
     let mut total_tracked: u128 = 0;
 
     if world.svm.get_account(&world.config_pda()).is_some() {
         assert_rent_exempt(world, &world.config_pda());
+    }
+
+    // Read every tracked permit once, up front: a closed (released)
+    // permit's account no longer exists, so it's skipped rather than
+    // panicking, and contributes nothing to its seller's sum. Every
+    // permit still open is bounded (`slashed <= max_slashable`) and, per
+    // this phase's task, must still carry `open_disputes == 0` --
+    // nothing sets it above zero until Phase 3's `raise_dispute`, so this
+    // is the tripwire that catches that handler immediately if it ever
+    // fails to increment it correctly.
+    let mut committed_by_seller: HashMap<Pubkey, u128> = HashMap::new();
+    for permit_pubkey in &world.permits {
+        let Some(permit) = world.try_read_permit(permit_pubkey) else {
+            continue;
+        };
+
+        assert!(
+            permit.slashed <= permit.max_slashable,
+            "permit.slashed must never exceed permit.max_slashable for {permit_pubkey}"
+        );
+        assert_eq!(
+            permit.open_disputes, 0,
+            "open_disputes must stay 0 until Phase 3's raise_dispute exists, for {permit_pubkey}"
+        );
+
+        let remaining_allowance = (permit.max_slashable - permit.slashed) as u128;
+        *committed_by_seller.entry(permit.seller).or_insert(0) += remaining_allowance;
+
+        assert_rent_exempt(world, permit_pubkey);
     }
 
     for stake_pubkey in &world.stakes {
@@ -803,6 +1087,11 @@ pub fn assert_invariants(world: &World) {
         assert_eq!(
             vault.amount, stake.staked,
             "stake_vault balance must equal SellerStake.staked for {stake_pubkey}"
+        );
+        let expected_committed = committed_by_seller.get(&stake.seller).copied().unwrap_or(0);
+        assert_eq!(
+            stake.committed as u128, expected_committed,
+            "committed must equal the sum of (max_slashable - slashed) across {stake_pubkey}'s active permits"
         );
         assert!(
             stake.committed <= stake.staked,

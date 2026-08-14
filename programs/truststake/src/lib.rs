@@ -107,4 +107,44 @@ pub mod truststake {
     pub fn add_stake(ctx: Context<AddStakeAccountConstraints>, amount: u64) -> Result<()> {
         instructions::add_stake::handler(ctx, amount)
     }
+
+    /// Moves `amount` out of the seller's `stake_vault`, gated on
+    /// `staked - amount >= committed`.
+    pub fn withdraw_stake(ctx: Context<WithdrawStakeAccountConstraints>, amount: u64) -> Result<()> {
+        instructions::withdraw_stake::handler(ctx, amount)
+    }
+
+    /// Creates the seller's `SlashPermit` for a marketplace, locking
+    /// `max_slashable` out of their free collateral and freezing the
+    /// marketplace's current `complaint_window`/`bond_bps` onto it.
+    pub fn grant_permit(ctx: Context<GrantPermitAccountConstraints>, max_slashable: u64) -> Result<()> {
+        instructions::grant_permit::handler(ctx, max_slashable)
+    }
+
+    /// Adds `delta` to an existing permit's `max_slashable`. Increase-only:
+    /// there is no handler that lowers a cap.
+    pub fn increase_permit(ctx: Context<IncreasePermitAccountConstraints>, delta: u64) -> Result<()> {
+        instructions::increase_permit::handler(ctx, delta)
+    }
+
+    /// Stamps `revoked_at`, starting the permit's complaint window. Frees
+    /// no collateral by itself; `release_permit` does that once the
+    /// window elapses.
+    pub fn revoke_permit(ctx: Context<RevokePermitAccountConstraints>) -> Result<()> {
+        instructions::revoke_permit::handler(ctx)
+    }
+
+    /// Permissionless once `now >= revoked_at + complaint_window` and
+    /// `open_disputes == 0`. Subtracts the permit's remaining allowance
+    /// from `stake.committed`, closes the permit, and refunds its rent to
+    /// the seller.
+    pub fn release_permit(ctx: Context<ReleasePermitAccountConstraints>) -> Result<()> {
+        instructions::release_permit::handler(ctx)
+    }
+
+    /// Does what `release_permit` does but skips the wait when both the
+    /// seller and the marketplace's current authority sign.
+    pub fn release_permit_early(ctx: Context<ReleasePermitEarlyAccountConstraints>) -> Result<()> {
+        instructions::release_permit_early::handler(ctx)
+    }
 }

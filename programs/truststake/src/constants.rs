@@ -9,6 +9,7 @@ pub const MARKETPLACE_SEED: &[u8] = b"market";
 pub const STAKE_SEED: &[u8] = b"stake";
 pub const VAULT_SEED: &[u8] = b"vault";
 pub const BOND_VAULT_SEED: &[u8] = b"bonds";
+pub const PERMIT_SEED: &[u8] = b"permit";
 
 /// Written into every account's `version` field at creation, so a later
 /// phase can migrate the layout without touching accounts already holding

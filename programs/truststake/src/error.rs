@@ -16,4 +16,14 @@ pub enum TrustStakeError {
     MathOverflow,
     #[msg("Vault balance disagrees with the recorded ledger")]
     ConservationViolation,
+    #[msg("Committed collateral would exceed staked collateral")]
+    CommittedExceedsStaked,
+    #[msg("Permit is already revoked")]
+    PermitAlreadyRevoked,
+    #[msg("Complaint window has not elapsed since revocation")]
+    ComplaintWindowNotElapsed,
+    #[msg("Permit has open disputes")]
+    OpenDisputesRemaining,
+    #[msg("Permit must be revoked first")]
+    PermitNotRevoked,
 }

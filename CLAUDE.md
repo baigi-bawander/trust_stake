@@ -19,6 +19,15 @@ Concretely:
 - The one ask: when you change something on this list, **update this file and the matching section of README.md** ("Prototype scope") to reflect the new reality. The failure mode this file exists to prevent is documentation quietly going stale — not change itself.
 - If you're not sure whether something is a deliberate tradeoff or an actual bug, the README's "Prototype scope" section and the git history are the sources of truth — check there before assuming either way.
 
+## v2 rebuild in progress
+
+The list below describes `main`, the deployed prototype. A ground-up rebuild is underway on
+branch `v2-rebuild` (multi-tenant, SPL-token collateral, unstaking, no single arbiter) and
+several items below no longer apply there. See `docs/DESIGN-v2.md` for what's actually
+happening on that branch. This section and the rest of this file get rewritten together once
+that branch lands, per Phase 4 of that doc's build order — not incrementally per phase, so it
+doesn't get rewritten three times while the architecture is still moving.
+
 ## Deliberate simplifications, as of now
 
 - **Single arbiter key** (`resolve_dispute` only accepts one hardcoded authority via `Config`). A real deployment needs a multisig or DAO vote — this was scoped down for a testable MVP within a hackathon timeframe, not because multi-party arbitration is hard to justify.
