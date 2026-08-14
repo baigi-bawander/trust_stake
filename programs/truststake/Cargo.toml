@@ -18,6 +18,18 @@ idl-build = ["anchor-lang/idl-build", "anchor-spl/idl-build"]
 anchor-debug = []
 custom-heap = []
 custom-panic = []
+# Gate-only feature (no dependency features), off by default. Guards the
+# `devnet_demo` example below so plain `cargo test` / `cargo build
+# --examples` don't try to compile it: docs/DESIGN-v2.md's Build order
+# assigns the demo's rewrite to Phase 4, so through Phases 1-3 it still
+# targets the prototype's four-handler API that Phase 1 removes. Run it
+# explicitly with `cargo run --example devnet_demo --features devnet_demo`.
+devnet_demo = []
+
+# See the `devnet_demo` feature comment above.
+[[example]]
+name = "devnet_demo"
+required-features = ["devnet_demo"]
 
 
 [dependencies]
@@ -27,7 +39,11 @@ custom-panic = []
 # anchor-spl below is exact-pinned to 1.1.2 for its own reasons and the two
 # crates must move together. The installed anchor-cli (was 1.0.1) is moved
 # to 1.1.2 via `avm use 1.1.2` to match, so the CLI's warning goes away.
-anchor-lang = "=1.1.2"
+# "event-cpi" is not a default feature; without it, `declare_id!` does not
+# generate `EVENT_AUTHORITY_AND_BUMP` and `emit_cpi!`/`#[event_cpi]` do not
+# compile. Phase 1 (docs/DESIGN-v2.md) requires `emit_cpi!` everywhere,
+# since plain `emit!` truncates silently past the 10KB log limit.
+anchor-lang = { version = "=1.1.2", features = ["event-cpi"] }
 # anchor-lang 1.1.2 does not re-export load_instruction_at_checked /
 # load_current_index_checked; raise_dispute (Phase 3) needs them directly.
 # Pinned ^3 to stay on the same solana-pubkey 3.x line anchor-lang 1.1.2
@@ -83,6 +99,14 @@ solana-signature = "3.0.0"
 # devnet_demo to fund throwaway keypairs); anchor-lang's own dependency on
 # this crate doesn't request it, so it's enabled explicitly here.
 solana-system-interface = { version = "2.0.0", features = ["bincode"] }
+# The Phase 1 test harness pattern-matches `FailedTransactionMetadata.err`
+# to assert a *specific* Anchor error code (docs/TESTING.md: "every
+# negative test asserts the specific error"), which needs both enum types
+# named directly. Pinned ^3, same reasoning as the other solana-* direct
+# dependencies above: `cargo tree -d` confirmed no new duplicate major
+# versions after adding these (see docs/DESIGN-v2.md Phase 0).
+solana-transaction-error = "^3"
+solana-instruction = "^3"
 
 
 [lints.rust]

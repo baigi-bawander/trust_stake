@@ -3,8 +3,15 @@
 //! transactions against Solana devnet, so each step produces a
 //! publicly-verifiable transaction signature.
 //!
+//! Targets the prototype's four-handler API. docs/DESIGN-v2.md's Build
+//! order assigns this file's rewrite (walking two marketplaces against
+//! the v2 program) to Phase 4, so it stays as-is and gated behind the
+//! `devnet_demo` feature (see Cargo.toml) through Phases 1-3, rather than
+//! failing plain `cargo build --examples` / `cargo test` against an API
+//! Phase 1 removes.
+//!
 //! Run with:
-//!   cargo run --example devnet_demo --manifest-path programs/truststake/Cargo.toml
+//!   cargo run --example devnet_demo --features devnet_demo --manifest-path programs/truststake/Cargo.toml
 //!
 //! The wallet at ~/.config/solana/id.json pays for everything and acts as
 //! the arbiter. It funds two throwaway keypairs, seller and buyer, with a

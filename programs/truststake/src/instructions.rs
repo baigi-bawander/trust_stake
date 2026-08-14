@@ -1,9 +1,23 @@
-pub mod create_stake;
-pub mod initialize_config;
-pub mod raise_dispute;
-pub mod resolve_dispute;
+// Same reasoning as instructions/admin.rs: every leaf module names its
+// handler function `handler`, so the blanket `module::*` re-exports below
+// collide on that name. Harmless, and the blanket glob (rather than
+// per-struct exports) is required so the hidden `__client_accounts_*`
+// modules `#[derive(Accounts)]` generates reach the crate root, which the
+// `#[program]` macro's own codegen depends on.
+#![allow(ambiguous_glob_reexports)]
 
-pub use create_stake::*;
-pub use initialize_config::*;
-pub use raise_dispute::*;
-pub use resolve_dispute::*;
+pub mod accept_marketplace_authority;
+pub mod add_stake;
+pub mod admin;
+pub mod initialize_stake;
+pub mod propose_marketplace_authority;
+pub mod register_marketplace;
+pub mod update_marketplace;
+
+pub use accept_marketplace_authority::*;
+pub use add_stake::*;
+pub use admin::*;
+pub use initialize_stake::*;
+pub use propose_marketplace_authority::*;
+pub use register_marketplace::*;
+pub use update_marketplace::*;

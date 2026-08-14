@@ -5567,6 +5567,7 @@ dependencies = [
  "litesvm",
  "solana-commitment-config",
  "solana-ed25519-program",
+ "solana-instruction",
  "solana-instructions-sysvar",
  "solana-keypair",
  "solana-message",
@@ -5576,6 +5577,7 @@ dependencies = [
  "solana-signer",
  "solana-system-interface 2.0.0",
  "solana-transaction",
+ "solana-transaction-error",
 ]
 
 [[package]]
