@@ -1,5 +1,7 @@
 [toolchain]
-package_manager = "yarn"
+# Yarn is banned by this project's toolchain rules (no reason to exist over
+# npm for a project this size); anchor init's default is yarn.
+package_manager = "npm"
 
 [features]
 resolution = true

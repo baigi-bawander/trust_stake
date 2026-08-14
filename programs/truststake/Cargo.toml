@@ -14,17 +14,59 @@ cpi = ["no-entrypoint"]
 no-entrypoint = []
 no-idl = []
 no-log-ix-name = []
-idl-build = ["anchor-lang/idl-build"]
+idl-build = ["anchor-lang/idl-build", "anchor-spl/idl-build"]
 anchor-debug = []
 custom-heap = []
 custom-panic = []
 
 
 [dependencies]
-anchor-lang = "1.0.1"
+# Was "1.0.1" but the lockfile already resolved 1.1.2 (a real disagreement
+# per docs/DESIGN-v2.md Phase 0, not just a caret-range ambiguity). Exact
+# pinned to 1.1.2 rather than rolled back to the 1.0.x line, because
+# anchor-spl below is exact-pinned to 1.1.2 for its own reasons and the two
+# crates must move together. The installed anchor-cli (was 1.0.1) is moved
+# to 1.1.2 via `avm use 1.1.2` to match, so the CLI's warning goes away.
+anchor-lang = "=1.1.2"
+# anchor-lang 1.1.2 does not re-export load_instruction_at_checked /
+# load_current_index_checked; raise_dispute (Phase 3) needs them directly.
+# Pinned ^3 to stay on the same solana-pubkey 3.x line anchor-lang 1.1.2
+# resolves (see docs/DESIGN-v2.md, "Program conventions" -> Phase 0): a
+# Pubkey from the 4.x line is a distinct type to the compiler.
+solana-instructions-sysvar = "^3"
+# anchor-lang 1.1.2 does not re-export ed25519_program::ID; raise_dispute
+# (Phase 3) needs it to check the Ed25519 instruction sysvar. Same 3.x pin
+# reasoning as solana-instructions-sysvar above.
+solana-sdk-ids = "^3"
+# Exact-pinned to match the resolved anchor-lang version: 1.1.2 tightened
+# the inter-crate anchor-* pins, so anchor-spl and anchor-lang must move
+# together.
+#
+# "token_2022" is required, not chosen. anchor-spl 1.1.2's idl_build.rs
+# references crate::token_interface with no cfg gate (only its "metadata"
+# and "stake" entries are gated), so the idl-build feature does not compile
+# unless both "token" and "token_2022" are enabled. Writing the program
+# against anchor_spl::token instead would not avoid it, because the
+# reference is inside anchor-spl rather than in our code. Drop "token_2022"
+# if that upstream packaging bug is fixed.
+#
+# "token_2022_extensions" stays off: it pulls spl-pod and the token group
+# and metadata interfaces, none of which this program uses.
+anchor-spl = { version = "=1.1.2", default-features = false, features = ["token", "token_2022", "associated_token"] }
 
 [dev-dependencies]
-litesvm = "0.10.0"
+# Builds the Ed25519-verify instruction the Phase 0 gate test submits to
+# LiteSVM's precompiles, and the receipt-signature instruction raise_dispute's
+# tests (Phase 3) will submit alongside it. Pinned ^3, same reasoning as the
+# other solana-* direct dependencies above.
+solana-ed25519-program = "^3"
+# "precompiles" runs the native Ed25519 program in-process, which
+# raise_dispute's tests (Phase 3) need to exercise the receipt signature
+# check. Existence confirmed for 0.10.0 by the Phase 0 gate test below;
+# do not bump the litesvm line without checking docs/DESIGN-v2.md's Phase 0
+# section first, since a version bump moves the whole solana-* dependency
+# tree onto a different major-version line.
+litesvm = { version = "0.10.0", features = ["precompiles"] }
 solana-message = "3.0.1"
 solana-transaction = "3.0.2"
 solana-signer = "3.0.0"
