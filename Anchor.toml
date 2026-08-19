@@ -9,6 +9,12 @@ skip-lint = false
 
 [programs.localnet]
 truststake = "3Vc6M8Az9h2GtDmqqhQKURqTKKygNfekQq7PoJris6V2"
+# A test fixture built by `anchor build` and loaded only into LiteSVM, so
+# raise_dispute's CPI and wrong-program attacks can be executed rather
+# than argued about. Deliberately absent from [programs.devnet] below: it
+# has no business on a cluster, and `anchor deploy -p truststake` is what
+# ships the protocol.
+cpi_wrapper = "67mpWaL4h4otDVxcYbDnpCESgqJ7d8dCrT6uvydTh194"
 
 [programs.devnet]
 truststake = "3Vc6M8Az9h2GtDmqqhQKURqTKKygNfekQq7PoJris6V2"

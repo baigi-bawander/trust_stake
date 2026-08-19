@@ -10,11 +10,19 @@ pub const STAKE_SEED: &[u8] = b"stake";
 pub const VAULT_SEED: &[u8] = b"vault";
 pub const BOND_VAULT_SEED: &[u8] = b"bonds";
 pub const PERMIT_SEED: &[u8] = b"permit";
+pub const DISPUTE_SEED: &[u8] = b"dispute";
 
 /// Written into every account's `version` field at creation, so a later
 /// phase can migrate the layout without touching accounts already holding
 /// real collateral.
 pub const ACCOUNT_VERSION: u8 = 1;
+
+/// The constant prefix every `OrderReceipt` starts with. It carries the
+/// receipt format's version, so the struct does not also need a version
+/// field, and it is what stops a `receipt_signer` key that also signs
+/// something else from having one of those other signatures reinterpreted
+/// as a receipt.
+pub const RECEIPT_DOMAIN: [u8; 21] = *b"truststake:receipt:v1";
 
 /// `initialize_config` only accepts this signer, so a freshly deployed
 /// program cannot have its config front-run by whoever notices the
@@ -35,3 +43,13 @@ pub const MAX_COMPLAINT_WINDOW_SECONDS: i64 = 30 * SECONDS_PER_DAY;
 /// Protocol ceiling on `Marketplace.bond_bps` (and the copy frozen onto
 /// each `SlashPermit`): 2,000 basis points, 20%.
 pub const MAX_BOND_BPS: u16 = 2_000;
+
+/// Basis points in one whole, the divisor every `bond_bps` calculation
+/// narrows back through.
+pub const BPS_DENOMINATOR: u16 = 10_000;
+
+/// How long a complaint may sit undecided before anyone may expire it
+/// (decision 7). Fixed protocol-wide rather than per-marketplace: it is
+/// the seller's protection against the marketplace that judges the
+/// complaint, so the marketplace does not get to choose it.
+pub const DISPUTE_EXPIRY_SECONDS: i64 = 30 * SECONDS_PER_DAY;

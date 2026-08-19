@@ -35,19 +35,22 @@ use litesvm::{
     types::{FailedTransactionMetadata, TransactionResult},
     LiteSVM,
 };
+use solana_ed25519_program::new_ed25519_instruction_with_signature;
 use solana_instruction::{error::InstructionError, Instruction};
 use solana_keypair::{read_keypair_file, Keypair};
 use solana_message::{Message, VersionedMessage};
+use solana_precompile_error::PrecompileError;
 use solana_signer::Signer;
 use solana_transaction::versioned::VersionedTransaction;
 use solana_transaction_error::TransactionError;
 
 use truststake::{
     constants::{
-        BOND_VAULT_SEED, CONFIG_SEED, INITIAL_ADMIN, MARKETPLACE_SEED, PERMIT_SEED, SEED_VERSION,
-        STAKE_SEED, VAULT_SEED,
+        BOND_VAULT_SEED, CONFIG_SEED, DISPUTE_SEED, INITIAL_ADMIN, MARKETPLACE_SEED, PERMIT_SEED,
+        SEED_VERSION, STAKE_SEED, VAULT_SEED,
     },
-    state::{Config, Marketplace, SellerStake, SlashPermit},
+    receipt::OrderReceipt,
+    state::{Config, DisputeRecord, DisputeStatus, Marketplace, SellerStake, SlashPermit},
 };
 
 const SOL: u64 = 1_000_000_000;
@@ -69,9 +72,9 @@ pub fn usdc(major_units: u64) -> u64 {
 /// Path resolution: `TRUSTSTAKE_ADMIN_KEYPAIR` env var if set, else
 /// `~/.config/solana/id.json` (the Solana CLI default, matching
 /// `examples/devnet_demo.rs`'s convention) for local convenience. Either
-/// way, `World::new()` loads the real `target/deploy/truststake.so` (built
-/// with the real `INITIAL_ADMIN` baked in — `initialize_config` accepts no
-/// other signer, by design), so the loaded keypair's pubkey must match it
+/// way, `World::new()` loads the real `target/deploy/truststake.so`, built
+/// with the real `INITIAL_ADMIN` baked in, and `initialize_config` accepts
+/// no other signer by design, so the loaded keypair's pubkey must match it
 /// exactly. Checked here, not left to surface downstream: without this
 /// check, a wrong keypair fails `initialize_config` with `NotInitialAdmin`
 /// and then cascades into every other test that depends on `Config`
@@ -117,11 +120,21 @@ pub fn send(
     svm.send_transaction(transaction)
 }
 
-/// The two accounts `#[event_cpi]` appends to every Phase 1 accounts
-/// struct: the `event_authority` PDA and the program itself.
+/// The two accounts `#[event_cpi]` appends to every accounts struct in
+/// this program: the `event_authority` PDA and the program itself.
 pub fn event_cpi_accounts(program_id: &Pubkey) -> (Pubkey, Pubkey) {
     let (event_authority, _bump) = Pubkey::find_program_address(&[b"__event_authority"], program_id);
     (event_authority, *program_id)
+}
+
+/// The canonical single-signature Ed25519 instruction verifying
+/// `signer`'s signature over `receipt`, which is the first half of every
+/// well-formed `raise_dispute` transaction. Attack tests that need a
+/// malformed one build it themselves rather than bending this.
+pub fn ed25519_verify_instruction(receipt: &OrderReceipt, signer: &Keypair) -> Instruction {
+    let message = receipt.message();
+    let signature: [u8; 64] = signer.sign_message(&message).into();
+    new_ed25519_instruction_with_signature(&message, &signature, &signer.pubkey().to_bytes())
 }
 
 /// Asserts that `result` failed with exactly `InstructionError::Custom(expected_code)`,
@@ -137,6 +150,22 @@ pub fn assert_error_code(result: &TransactionResult, expected_code: u32) {
             ..
         }) => assert_eq!(*code, expected_code, "wrong error code"),
         other => panic!("expected InstructionError::Custom({expected_code}), got {other:?}"),
+    }
+}
+
+/// Asserts the transaction failed inside the Ed25519 precompile at
+/// instruction 0, before `raise_dispute` ran at all. A precompile
+/// reports its error as `InstructionError::Custom(discriminant)`, which
+/// is the same shape a program error takes, so the instruction index is
+/// what separates "this signature does not verify" from "the program
+/// rejected this receipt".
+pub fn assert_precompile_error(result: &TransactionResult, expected: PrecompileError) {
+    match result {
+        Err(FailedTransactionMetadata {
+            err: TransactionError::InstructionError(0, InstructionError::Custom(code)),
+            ..
+        }) => assert_eq!(*code, expected as u32, "wrong precompile error"),
+        other => panic!("expected the Ed25519 precompile to fail with {expected:?}, got {other:?}"),
     }
 }
 
@@ -166,6 +195,11 @@ pub struct World {
     /// at the same (seller, marketplace) address after a release is safe
     /// to track twice.
     permits: Vec<Pubkey>,
+    /// Every dispute ever successfully raised, by PDA. Not pruned when
+    /// `close_dispute` deletes one, for the same reason `permits` is not:
+    /// `assert_invariants` treats a tracked pubkey with no account behind
+    /// it as closed and skips it.
+    disputes: Vec<Pubkey>,
     token_accounts: Vec<Pubkey>,
 }
 
@@ -175,6 +209,15 @@ impl World {
         let mut svm = LiteSVM::new();
         svm.add_program(program_id, include_bytes!("../../../../target/deploy/truststake.so"))
             .expect("failed to load truststake.so; run `anchor build` first");
+        // The CPI and wrong-program fixture (programs/cpi_wrapper), loaded
+        // at its own declared ID so its Anchor entrypoint accepts the
+        // calls. Present in every World rather than only where it is used:
+        // it is a few kilobytes and one `add_program` call.
+        svm.add_program(
+            cpi_wrapper::ID,
+            include_bytes!("../../../../target/deploy/cpi_wrapper.so"),
+        )
+        .expect("failed to load cpi_wrapper.so; run `anchor build` first");
 
         // LiteSVM's default Clock sysvar starts at unix_timestamp 0. A real
         // cluster's timestamp is never 0, and `update_marketplace` uses 0 as
@@ -236,6 +279,7 @@ impl World {
             stakes: Vec::new(),
             marketplaces: Vec::new(),
             permits: Vec::new(),
+            disputes: Vec::new(),
             token_accounts: Vec::new(),
         }
     }
@@ -278,6 +322,14 @@ impl World {
         .0
     }
 
+    pub fn dispute_pda(&self, marketplace: &Pubkey, order_id: &[u8; 32]) -> Pubkey {
+        Pubkey::find_program_address(
+            &[DISPUTE_SEED, SEED_VERSION, marketplace.as_ref(), order_id.as_ref()],
+            &self.program_id,
+        )
+        .0
+    }
+
     // ---- account readers ----
 
     pub fn read_config(&self) -> Config {
@@ -314,6 +366,17 @@ impl World {
         Some(SlashPermit::try_deserialize(&mut account.data.as_slice()).expect("valid SlashPermit data"))
     }
 
+    pub fn read_dispute(&self, dispute: &Pubkey) -> DisputeRecord {
+        let account = self.svm.get_account(dispute).expect("dispute account must exist");
+        DisputeRecord::try_deserialize(&mut account.data.as_slice()).expect("valid DisputeRecord data")
+    }
+
+    /// `None` once `close_dispute` has deleted the record.
+    pub fn try_read_dispute(&self, dispute: &Pubkey) -> Option<DisputeRecord> {
+        let account = self.svm.get_account(dispute)?;
+        Some(DisputeRecord::try_deserialize(&mut account.data.as_slice()).expect("valid DisputeRecord data"))
+    }
+
     pub fn read_token_account(&self, pubkey: &Pubkey) -> spl_token::state::Account {
         let account = self.svm.get_account(pubkey).expect("token account must exist");
         spl_token::state::Account::unpack(&account.data).expect("valid token account data")
@@ -325,10 +388,16 @@ impl World {
 
     // ---- clock ----
 
+    /// The harness's current `Clock` timestamp, which is what every
+    /// handler reads and what receipts are dated against.
+    pub fn now(&self) -> i64 {
+        self.svm.get_sysvar::<Clock>().unix_timestamp
+    }
+
     /// Advances the harness's `Clock` sysvar by `seconds`, for boundary
     /// tests on timestamp-gated handlers (`release_permit`'s complaint
-    /// window, and Phase 3's dispute expiry later). LiteSVM does not
-    /// advance wall-clock time on its own between transactions.
+    /// window, and dispute expiry). LiteSVM does not advance wall-clock
+    /// time on its own between transactions.
     pub fn warp_seconds(&mut self, seconds: i64) {
         let mut clock = self.svm.get_sysvar::<Clock>();
         clock.unix_timestamp = clock
@@ -480,6 +549,35 @@ impl World {
         }
 
         token_account.pubkey()
+    }
+
+    /// Mints more of the collateral mint into an existing token account,
+    /// for tests that need a balance topped up after it was created.
+    /// Tracked in `minted_total` like every other mint, so the
+    /// conservation invariant still holds afterwards.
+    pub fn mint_to(&mut self, token_account: &Pubkey, amount: u64) {
+        let instruction = spl_token::instruction::mint_to(
+            &spl_token::ID,
+            &self.mint,
+            token_account,
+            &self.mint_authority.pubkey(),
+            &[],
+            amount,
+        )
+        .expect("build mint_to instruction");
+
+        send(
+            &mut self.svm,
+            &[instruction],
+            &self.payer.pubkey(),
+            &[&self.payer, &self.mint_authority],
+        )
+        .expect("mint into an existing token account");
+
+        self.minted_total = self
+            .minted_total
+            .checked_add(amount)
+            .expect("minted_total overflow");
     }
 
     /// Sends a fully custom instruction set, for the handful of tests
@@ -1023,6 +1121,246 @@ impl World {
         assert_invariants(self);
         result
     }
+
+    // ---- disputes ----
+
+    /// The `raise_dispute` instruction on its own, so the signature-check
+    /// tests can pair it with a hand-built, misplaced, or entirely absent
+    /// Ed25519 instruction.
+    #[allow(clippy::too_many_arguments)]
+    pub fn raise_dispute_instruction(
+        &self,
+        buyer: Pubkey,
+        buyer_token_account: Pubkey,
+        marketplace: Pubkey,
+        seller: Pubkey,
+        order_id: [u8; 32],
+        claim: u64,
+    ) -> Instruction {
+        self.raise_dispute_instruction_with_sysvar(
+            buyer,
+            buyer_token_account,
+            marketplace,
+            seller,
+            order_id,
+            claim,
+            solana_instructions_sysvar::ID,
+        )
+    }
+
+    /// Lower-level variant taking whatever account should occupy the
+    /// Instructions sysvar slot, for
+    /// `test_introspection_rejects_forged_sysvar`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn raise_dispute_instruction_with_sysvar(
+        &self,
+        buyer: Pubkey,
+        buyer_token_account: Pubkey,
+        marketplace: Pubkey,
+        seller: Pubkey,
+        order_id: [u8; 32],
+        claim: u64,
+        instructions_sysvar: Pubkey,
+    ) -> Instruction {
+        let (event_authority, program) = event_cpi_accounts(&self.program_id);
+
+        Instruction::new_with_bytes(
+            self.program_id,
+            &truststake::instruction::RaiseDispute { order_id, claim }.data(),
+            truststake::accounts::RaiseDisputeAccountConstraints {
+                buyer,
+                config: self.config_pda(),
+                marketplace,
+                stake: self.stake_pda(&seller),
+                permit: self.permit_pda(&seller, &marketplace),
+                dispute: self.dispute_pda(&marketplace, &order_id),
+                bond_vault: self.bond_vault_pda(&marketplace),
+                mint: self.mint,
+                buyer_token_account,
+                instructions_sysvar,
+                token_program: spl_token::ID,
+                system_program: anchor_lang::system_program::ID,
+                event_authority,
+                program,
+            }
+            .to_account_metas(None),
+        )
+    }
+
+    /// Sends an already-built dispute transaction, tracking the record so
+    /// `assert_invariants` starts counting it. Every signature-check test
+    /// goes through here with its own instruction list.
+    pub fn send_raise_dispute(
+        &mut self,
+        instructions: &[Instruction],
+        buyer: &Keypair,
+        marketplace: Pubkey,
+        order_id: [u8; 32],
+    ) -> TransactionResult {
+        let result = send(&mut self.svm, instructions, &buyer.pubkey(), &[buyer]);
+        let dispute = self.dispute_pda(&marketplace, &order_id);
+        if result.is_ok() && !self.disputes.contains(&dispute) {
+            self.disputes.push(dispute);
+        }
+        assert_invariants(self);
+        result
+    }
+
+    /// The whole two-instruction transaction: the Ed25519 verification of
+    /// `receipt` by `receipt_signer`, then `raise_dispute` against the
+    /// seller and order the receipt itself names.
+    pub fn raise_dispute(
+        &mut self,
+        buyer: &Keypair,
+        buyer_token_account: Pubkey,
+        marketplace: Pubkey,
+        receipt: &OrderReceipt,
+        receipt_signer: &Keypair,
+        claim: u64,
+    ) -> TransactionResult {
+        self.raise_dispute_against(
+            buyer,
+            buyer_token_account,
+            marketplace,
+            receipt.seller,
+            receipt.order_id,
+            receipt,
+            receipt_signer,
+            claim,
+        )
+    }
+
+    /// Lower-level variant taking the seller and order ID the
+    /// *instruction* names, which the happy path derives from the receipt.
+    /// Splitting them is what lets a test file a valid signature over one
+    /// seller's order against a different seller's collateral.
+    #[allow(clippy::too_many_arguments)]
+    pub fn raise_dispute_against(
+        &mut self,
+        buyer: &Keypair,
+        buyer_token_account: Pubkey,
+        marketplace: Pubkey,
+        seller: Pubkey,
+        order_id: [u8; 32],
+        receipt: &OrderReceipt,
+        receipt_signer: &Keypair,
+        claim: u64,
+    ) -> TransactionResult {
+        let verify_instruction = ed25519_verify_instruction(receipt, receipt_signer);
+        let raise_instruction = self.raise_dispute_instruction(
+            buyer.pubkey(),
+            buyer_token_account,
+            marketplace,
+            seller,
+            order_id,
+            claim,
+        );
+        self.send_raise_dispute(
+            &[verify_instruction, raise_instruction],
+            buyer,
+            marketplace,
+            order_id,
+        )
+    }
+
+    pub fn resolve_dispute(
+        &mut self,
+        arbiter: &Keypair,
+        marketplace: Pubkey,
+        order_id: [u8; 32],
+        buyer_token_account: Pubkey,
+        upheld: bool,
+    ) -> TransactionResult {
+        let dispute = self.dispute_pda(&marketplace, &order_id);
+        let seller = self.read_dispute(&dispute).seller;
+        let (event_authority, program) = event_cpi_accounts(&self.program_id);
+
+        let instruction = Instruction::new_with_bytes(
+            self.program_id,
+            &truststake::instruction::ResolveDispute { upheld }.data(),
+            truststake::accounts::ResolveDisputeAccountConstraints {
+                arbiter: arbiter.pubkey(),
+                marketplace,
+                dispute,
+                permit: self.permit_pda(&seller, &marketplace),
+                stake: self.stake_pda(&seller),
+                stake_vault: self.stake_vault_pda(&seller),
+                bond_vault: self.bond_vault_pda(&marketplace),
+                mint: self.mint,
+                buyer_token_account,
+                token_program: spl_token::ID,
+                event_authority,
+                program,
+            }
+            .to_account_metas(None),
+        );
+
+        let result = send(&mut self.svm, &[instruction], &arbiter.pubkey(), &[arbiter]);
+        assert_invariants(self);
+        result
+    }
+
+    /// `caller` may be any funded keypair: expiry is permissionless, which
+    /// is the whole protection against a marketplace that stops
+    /// answering.
+    pub fn expire_dispute(
+        &mut self,
+        caller: &Keypair,
+        marketplace: Pubkey,
+        order_id: [u8; 32],
+        buyer_token_account: Pubkey,
+    ) -> TransactionResult {
+        let dispute = self.dispute_pda(&marketplace, &order_id);
+        let seller = self.read_dispute(&dispute).seller;
+        let (event_authority, program) = event_cpi_accounts(&self.program_id);
+
+        let instruction = Instruction::new_with_bytes(
+            self.program_id,
+            &truststake::instruction::ExpireDispute {}.data(),
+            truststake::accounts::ExpireDisputeAccountConstraints {
+                caller: caller.pubkey(),
+                marketplace,
+                dispute,
+                permit: self.permit_pda(&seller, &marketplace),
+                bond_vault: self.bond_vault_pda(&marketplace),
+                mint: self.mint,
+                buyer_token_account,
+                token_program: spl_token::ID,
+                event_authority,
+                program,
+            }
+            .to_account_metas(None),
+        );
+
+        let result = send(&mut self.svm, &[instruction], &caller.pubkey(), &[caller]);
+        assert_invariants(self);
+        result
+    }
+
+    /// Permissionless too; `buyer` is read off the record rather than
+    /// passed, since it is the rent destination and nothing else.
+    pub fn close_dispute(&mut self, caller: &Keypair, marketplace: Pubkey, order_id: [u8; 32]) -> TransactionResult {
+        let dispute = self.dispute_pda(&marketplace, &order_id);
+        let buyer = self.read_dispute(&dispute).buyer;
+        let (event_authority, program) = event_cpi_accounts(&self.program_id);
+
+        let instruction = Instruction::new_with_bytes(
+            self.program_id,
+            &truststake::instruction::CloseDispute {}.data(),
+            truststake::accounts::CloseDisputeAccountConstraints {
+                caller: caller.pubkey(),
+                buyer,
+                dispute,
+                event_authority,
+                program,
+            }
+            .to_account_metas(None),
+        );
+
+        let result = send(&mut self.svm, &[instruction], &caller.pubkey(), &[caller]);
+        assert_invariants(self);
+        result
+    }
 }
 
 fn assert_rent_exempt(world: &World, pubkey: &Pubkey) {
@@ -1038,11 +1376,6 @@ fn assert_rent_exempt(world: &World, pubkey: &Pubkey) {
 }
 
 /// Checked after every `World` method (docs/TESTING.md, "Invariants").
-/// Phase 1 had no permits or disputes yet, so it could only check the
-/// weaker `committed <= staked` bound; Phase 2 adds `grant_permit` and
-/// friends, which is what `committed` is actually supposed to track, so
-/// the stronger equality below replaces it. Bond-pool-matches-records
-/// with real bonds still holds vacuously until Phase 3.
 pub fn assert_invariants(world: &World) {
     let mut total_tracked: u128 = 0;
 
@@ -1050,14 +1383,30 @@ pub fn assert_invariants(world: &World) {
         assert_rent_exempt(world, &world.config_pda());
     }
 
-    // Read every tracked permit once, up front: a closed (released)
-    // permit's account no longer exists, so it's skipped rather than
-    // panicking, and contributes nothing to its seller's sum. Every
-    // permit still open is bounded (`slashed <= max_slashable`) and, per
-    // this phase's task, must still carry `open_disputes == 0` --
-    // nothing sets it above zero until Phase 3's `raise_dispute`, so this
-    // is the tripwire that catches that handler immediately if it ever
-    // fails to increment it correctly.
+    // Read every tracked dispute once, up front. A closed record's
+    // account no longer exists, so it is skipped rather than panicking,
+    // and only records still Open count: those are exactly the ones whose
+    // bond is still sitting in a bond vault and whose freeze is still on
+    // a permit.
+    let mut open_disputes_by_permit: HashMap<(Pubkey, Pubkey), u32> = HashMap::new();
+    let mut bonds_by_marketplace: HashMap<Pubkey, u128> = HashMap::new();
+    for dispute_pubkey in &world.disputes {
+        let Some(dispute) = world.try_read_dispute(dispute_pubkey) else {
+            continue;
+        };
+        assert_rent_exempt(world, dispute_pubkey);
+
+        if dispute.status != DisputeStatus::Open as u8 {
+            continue;
+        }
+        *open_disputes_by_permit
+            .entry((dispute.seller, dispute.marketplace))
+            .or_insert(0) += 1;
+        *bonds_by_marketplace.entry(dispute.marketplace).or_insert(0) += dispute.bond as u128;
+    }
+
+    // Every tracked permit: a released permit's account is gone, so it is
+    // skipped and contributes nothing to its seller's committed sum.
     let mut committed_by_seller: HashMap<Pubkey, u128> = HashMap::new();
     for permit_pubkey in &world.permits {
         let Some(permit) = world.try_read_permit(permit_pubkey) else {
@@ -1068,9 +1417,18 @@ pub fn assert_invariants(world: &World) {
             permit.slashed <= permit.max_slashable,
             "permit.slashed must never exceed permit.max_slashable for {permit_pubkey}"
         );
+        // The counter that gates release, against the records that are
+        // the truth behind it. A counter that fails to decrement locks
+        // the seller's collateral up forever; one that decrements twice
+        // lets a permit be released with money still owed.
+        let open_disputes = open_disputes_by_permit
+            .get(&(permit.seller, permit.marketplace))
+            .copied()
+            .unwrap_or(0);
         assert_eq!(
-            permit.open_disputes, 0,
-            "open_disputes must stay 0 until Phase 3's raise_dispute exists, for {permit_pubkey}"
+            u32::from(permit.open_disputes),
+            open_disputes,
+            "open_disputes must equal the number of Open dispute records against {permit_pubkey}"
         );
 
         let remaining_allowance = (permit.max_slashable - permit.slashed) as u128;
@@ -1112,9 +1470,17 @@ pub fn assert_invariants(world: &World) {
         let bond_vault_pubkey = world.bond_vault_pda(marketplace_pubkey);
         let bond_vault = world.read_token_account(&bond_vault_pubkey);
 
+        // The shared bond pool against the records that own it. A
+        // resolution that pays out an amount other than the one recorded,
+        // or pays one out twice, overdraws some other buyer's bond and
+        // shows up here.
+        let expected_bonds = bonds_by_marketplace
+            .get(marketplace_pubkey)
+            .copied()
+            .unwrap_or(0);
         assert_eq!(
-            bond_vault.amount, 0,
-            "bond_vault must be empty before raise_dispute exists (Phase 3) for {marketplace_pubkey}"
+            bond_vault.amount as u128, expected_bonds,
+            "bond_vault must hold exactly the sum of Open disputes' recorded bonds for {marketplace_pubkey}"
         );
 
         assert_rent_exempt(world, marketplace_pubkey);

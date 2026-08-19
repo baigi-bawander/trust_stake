@@ -1050,6 +1050,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3d52eff69cd5e647efe296129160853a42795992097e8af39800e1060caeea9b"
 
 [[package]]
+name = "cpi_wrapper"
+version = "0.1.0"
+dependencies = [
+ "anchor-lang",
+]
+
+[[package]]
 name = "cpufeatures"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5564,13 +5571,17 @@ version = "0.1.0"
 dependencies = [
  "anchor-lang",
  "anchor-spl",
+ "bincode",
+ "cpi_wrapper",
  "litesvm",
+ "solana-account",
  "solana-commitment-config",
  "solana-ed25519-program",
  "solana-instruction",
  "solana-instructions-sysvar",
  "solana-keypair",
  "solana-message",
+ "solana-precompile-error",
  "solana-rpc-client",
  "solana-sdk-ids",
  "solana-signature",

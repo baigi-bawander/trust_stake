@@ -110,3 +110,51 @@ pub struct PermitReleasedEarly {
     pub marketplace: Pubkey,
     pub remaining_allowance: u64,
 }
+
+#[event]
+pub struct DisputeRaised {
+    pub marketplace: Pubkey,
+    pub seller: Pubkey,
+    pub buyer: Pubkey,
+    pub order_id: [u8; 32],
+    pub claim: u64,
+    pub bond: u64,
+    pub expires_at: i64,
+    pub closable_after: i64,
+}
+
+/// Carries the buyer and the outcome, which is what makes a buyer's
+/// history computable offchain without storing any of it onchain
+/// (docs/DESIGN-v2.md, "What this design deliberately does not do").
+/// `payout` is zero on the rejected path, where the bond moves to the
+/// seller instead.
+#[event]
+pub struct DisputeResolved {
+    pub marketplace: Pubkey,
+    pub seller: Pubkey,
+    pub buyer: Pubkey,
+    pub order_id: [u8; 32],
+    pub upheld: bool,
+    pub claim: u64,
+    pub payout: u64,
+    pub bond: u64,
+}
+
+/// The marketplace's permanent public mark for never deciding
+/// (decision 7). Nobody is paid; the bond goes back to the buyer.
+#[event]
+pub struct DisputeExpired {
+    pub marketplace: Pubkey,
+    pub seller: Pubkey,
+    pub buyer: Pubkey,
+    pub order_id: [u8; 32],
+    pub bond: u64,
+}
+
+#[event]
+pub struct DisputeClosed {
+    pub marketplace: Pubkey,
+    pub buyer: Pubkey,
+    pub order_id: [u8; 32],
+    pub status: u8,
+}

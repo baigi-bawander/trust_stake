@@ -1,7 +1,9 @@
 pub mod constants;
+pub mod ed25519;
 pub mod error;
 pub mod events;
 pub mod instructions;
+pub mod receipt;
 pub mod state;
 
 use anchor_lang::prelude::*;
@@ -9,6 +11,7 @@ use anchor_lang::prelude::*;
 pub use constants::*;
 pub use events::*;
 pub use instructions::*;
+pub use receipt::*;
 pub use state::*;
 
 declare_id!("3Vc6M8Az9h2GtDmqqhQKURqTKKygNfekQq7PoJris6V2");
@@ -146,5 +149,38 @@ pub mod truststake {
     /// seller and the marketplace's current authority sign.
     pub fn release_permit_early(ctx: Context<ReleasePermitEarlyAccountConstraints>) -> Result<()> {
         instructions::release_permit_early::handler(ctx)
+    }
+
+    /// Opens a complaint about `order_id`, proved by a
+    /// marketplace-signed receipt that the transaction's Ed25519
+    /// instruction verifies. Must be submitted as
+    /// `[Ed25519Program verify, raise_dispute]`, in that order.
+    pub fn raise_dispute(
+        ctx: Context<RaiseDisputeAccountConstraints>,
+        order_id: [u8; 32],
+        claim: u64,
+    ) -> Result<()> {
+        instructions::raise_dispute::handler(ctx, order_id, claim)
+    }
+
+    /// Decides an open complaint. Signed by the marketplace's arbiter.
+    /// Upheld pays the buyer out of the seller's collateral and returns
+    /// the bond; rejected forfeits the bond to the seller.
+    pub fn resolve_dispute(ctx: Context<ResolveDisputeAccountConstraints>, upheld: bool) -> Result<()> {
+        instructions::resolve_dispute::handler(ctx, upheld)
+    }
+
+    /// Permissionless once a complaint has sat undecided for 30 days.
+    /// Nobody is paid, the bond returns to the buyer, the permit's freeze
+    /// lifts, and the marketplace takes a public mark.
+    pub fn expire_dispute(ctx: Context<ExpireDisputeAccountConstraints>) -> Result<()> {
+        instructions::expire_dispute::handler(ctx)
+    }
+
+    /// Permissionless once a complaint is decided and its receipt is too
+    /// old to reuse. Deletes the record and refunds its rent to the
+    /// buyer.
+    pub fn close_dispute(ctx: Context<CloseDisputeAccountConstraints>) -> Result<()> {
+        instructions::close_dispute::handler(ctx)
     }
 }

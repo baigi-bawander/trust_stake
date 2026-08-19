@@ -1,0 +1,29 @@
+[package]
+name = "cpi_wrapper"
+version = "0.1.0"
+description = "Test fixture: forwards an instruction through CPI, or accepts anything and does nothing"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "cpi_wrapper"
+
+[features]
+default = []
+cpi = ["no-entrypoint"]
+no-entrypoint = []
+no-idl = []
+no-log-ix-name = []
+idl-build = ["anchor-lang/idl-build"]
+# Declared, though nothing here turns them on: Anchor's macros expand to
+# `cfg(feature = "...")` checks for all three, which warn as unexpected
+# cfg values in a crate that does not name them.
+anchor-debug = []
+custom-heap = []
+custom-panic = []
+
+[dependencies]
+# Exact-pinned to the same version programs/truststake uses: both are
+# built by one `anchor build` against one installed anchor-cli, and 1.1.2
+# tightened the inter-crate anchor-* pins.
+anchor-lang = "=1.1.2"

@@ -1,10 +1,24 @@
 use anchor_lang::prelude::*;
 
+/// The states a [`DisputeRecord`] can be in. The discriminants start at 1
+/// so a zeroed account can never read as a valid state
+/// (docs/DESIGN-v2.md, "Account model"). Stored as the plain `u8` the
+/// account model fixes, rather than as a Borsh enum, so a byte that is
+/// none of these four is unreadable rather than silently mapped.
+#[repr(u8)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum DisputeStatus {
+    Open = 1,
+    Upheld = 2,
+    Rejected = 3,
+    Abandoned = 4,
+}
+
 /// An open or resolved complaint (`["dispute", "v2", marketplace,
-/// order_id]`). Declared now for the same reason as `SlashPermit`; no
-/// handler creates or reads this until `raise_dispute` (Phase 3), which
-/// is also where the `status` discriminants (starting at 1, so a zeroed
-/// account can never read as a valid state) are defined.
+/// order_id]`), created by `raise_dispute` and deleted by `close_dispute`
+/// once its receipt is too old to reuse. The account's existence is also
+/// the replay guard: a second complaint against the same order collides
+/// with this PDA and cannot be created.
 #[account]
 #[derive(InitSpace)]
 pub struct DisputeRecord {
@@ -23,6 +37,7 @@ pub struct DisputeRecord {
     pub expires_at: i64,
     /// `receipt.issued_at + permit.complaint_window`.
     pub closable_after: i64,
+    /// One of [`DisputeStatus`], as `DisputeStatus::Open as u8`.
     pub status: u8,
     pub reserved: [u8; 32],
 }

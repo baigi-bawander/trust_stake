@@ -54,6 +54,14 @@ solana-instructions-sysvar = "^3"
 # (Phase 3) needs it to check the Ed25519 instruction sysvar. Same 3.x pin
 # reasoning as solana-instructions-sysvar above.
 solana-sdk-ids = "^3"
+# A program dependency, not only a test one: src/ed25519.rs takes the
+# Ed25519 instruction's byte layout (DATA_START, PUBKEY_SERIALIZED_SIZE,
+# SIGNATURE_SERIALIZED_SIZE, SIGNATURE_OFFSETS_START) from the crate that
+# defines it, rather than restating those offsets as literals in the one
+# place in the program where a wrong offset is exploitable. The tests
+# build Ed25519 instructions with the same crate. Same 3.x pin reasoning
+# as the other solana-* dependencies above.
+solana-ed25519-program = "^3"
 # Exact-pinned to match the resolved anchor-lang version: 1.1.2 tightened
 # the inter-crate anchor-* pins, so anchor-spl and anchor-lang must move
 # together.
@@ -71,11 +79,12 @@ solana-sdk-ids = "^3"
 anchor-spl = { version = "=1.1.2", default-features = false, features = ["token", "token_2022", "associated_token"] }
 
 [dev-dependencies]
-# Builds the Ed25519-verify instruction the Phase 0 gate test submits to
-# LiteSVM's precompiles, and the receipt-signature instruction raise_dispute's
-# tests (Phase 3) will submit alongside it. Pinned ^3, same reasoning as the
-# other solana-* direct dependencies above.
-solana-ed25519-program = "^3"
+# The CPI/wrong-program fixture the signature-check tests load into
+# LiteSVM (programs/cpi_wrapper). Depended on for its declared program ID
+# alone, so the harness cannot load it at an address its own
+# `declare_id!` disagrees with. "no-entrypoint" keeps its SBF entrypoint
+# symbol out of the test binary, where truststake's own already lives.
+cpi_wrapper = { path = "../cpi_wrapper", features = ["no-entrypoint"] }
 # "precompiles" runs the native Ed25519 program in-process, which
 # raise_dispute's tests (Phase 3) need to exercise the receipt signature
 # check. Existence confirmed for 0.10.0 by the Phase 0 gate test below;
@@ -107,6 +116,20 @@ solana-system-interface = { version = "2.0.0", features = ["bincode"] }
 # versions after adding these (see docs/DESIGN-v2.md Phase 0).
 solana-transaction-error = "^3"
 solana-instruction = "^3"
+# A failing Ed25519 verification surfaces as
+# InstructionError::Custom(PrecompileError discriminant). The dispute
+# tests assert that specific error by name rather than by number, so the
+# enum has to be nameable. Pinned ^3, same reasoning as above.
+solana-precompile-error = "^3"
+# test_introspection_rejects_forged_sysvar writes an attacker-built
+# account into the Instructions sysvar slot, which needs the Account type
+# LiteSVM's set_account takes. Pinned ^3, same reasoning as above.
+solana-account = "^3"
+# test_raise_dispute_transaction_size measures the real serialised
+# transaction against the 1,232-byte limit, which means encoding it the
+# way the wire does rather than estimating. Version 1 is what the whole
+# solana-* line already uses for transaction encoding.
+bincode = "1"
 
 
 [lints.rust]

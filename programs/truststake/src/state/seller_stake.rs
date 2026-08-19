@@ -50,4 +50,23 @@ impl SellerStake {
             .ok_or(TrustStakeError::MathOverflow)?;
         Ok(())
     }
+
+    /// Pays `amount` out of the seller's collateral to a wronged buyer,
+    /// which `resolve_dispute` calls on the upheld path. Both figures
+    /// fall together, and that pairing is the whole reason this is one
+    /// method rather than two lines in the handler: the permit's
+    /// remaining allowance and the collateral backing it have to move in
+    /// step, or `committed <= staked` breaks the first time a fully
+    /// committed seller is slashed (docs/DESIGN-v2.md, "resolve_dispute").
+    pub fn slash(&mut self, amount: u64) -> Result<()> {
+        self.staked = self
+            .staked
+            .checked_sub(amount)
+            .ok_or(TrustStakeError::MathOverflow)?;
+        self.committed = self
+            .committed
+            .checked_sub(amount)
+            .ok_or(TrustStakeError::MathOverflow)?;
+        Ok(())
+    }
 }

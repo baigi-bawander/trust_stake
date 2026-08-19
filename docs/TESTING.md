@@ -324,13 +324,12 @@ These are not pass-or-fail assertions so much as numbers to record and watch, bu
 one has a hard ceiling and needs a real test.
 
 - `test_raise_dispute_transaction_size`: build the full two-instruction transaction and
-  assert it serialises under **1,232 bytes**. The design estimates roughly 830. Transaction
+  assert it serialises under **1,232 bytes**. Measured at **953** in Phase 3. Transaction
   size, not compute, is the binding constraint in this program. If it goes over, the fix is
   Address Lookup Tables, never dropping a check.
-- `test_raise_dispute_compute`: record the consumed compute units. Expect roughly 40k to
-  70k against a default budget near 203k, with the Ed25519 instruction contributing about
-  3,000. If this comes in near the budget, something is wrong with an assumption rather than
-  with the budget.
+- `test_raise_dispute_compute`: record the consumed compute units. Measured at **42,229**
+  in Phase 3 against a 200,000 default budget. If this comes in near the budget, something is
+  wrong with an assumption rather than with the budget.
 - `test_raise_dispute_stack_frame`: the account struct must not blow the 4KB stack frame.
   Box the cold-path accounts. This shows up as a build warning rather than a test failure,
   so check for it explicitly.

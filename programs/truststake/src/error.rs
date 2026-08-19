@@ -26,4 +26,46 @@ pub enum TrustStakeError {
     OpenDisputesRemaining,
     #[msg("Permit must be revoked first")]
     PermitNotRevoked,
+    #[msg("Instructions sysvar account is not the real one")]
+    InvalidInstructionsSysvar,
+    #[msg("raise_dispute must be a top-level instruction, not reached through CPI")]
+    MustBeTopLevelInstruction,
+    #[msg("No Ed25519 verify instruction immediately before this one")]
+    MissingEd25519Instruction,
+    #[msg("Ed25519 verify instruction is not the canonical single-signature form")]
+    MalformedEd25519Instruction,
+    #[msg("Receipt was not signed by the marketplace's receipt signer")]
+    WrongReceiptSigner,
+    #[msg("Receipt carries the wrong domain prefix")]
+    WrongReceiptDomain,
+    #[msg("Receipt was issued for a different program")]
+    WrongReceiptProgram,
+    #[msg("Receipt was issued for a different cluster")]
+    WrongChainId,
+    #[msg("Receipt is past its expiry")]
+    ReceiptExpired,
+    #[msg("Complaint window for this receipt has closed")]
+    ComplaintWindowClosed,
+    #[msg("Receipt names a different marketplace")]
+    ReceiptMarketplaceMismatch,
+    #[msg("Receipt names a different seller")]
+    ReceiptSellerMismatch,
+    #[msg("Receipt names a different buyer")]
+    ReceiptBuyerMismatch,
+    #[msg("Receipt names a different order")]
+    ReceiptOrderMismatch,
+    #[msg("Receipt was issued after the permit was revoked")]
+    ReceiptIssuedAfterRevocation,
+    #[msg("Claim exceeds the receipt's order amount")]
+    ClaimExceedsReceipt,
+    #[msg("Only the marketplace's arbiter may resolve this dispute")]
+    NotArbiter,
+    #[msg("Dispute is not open")]
+    DisputeNotOpen,
+    #[msg("Dispute is still open")]
+    DisputeStillOpen,
+    #[msg("Dispute has not reached its expiry")]
+    DisputeNotExpired,
+    #[msg("Dispute's receipt is still inside its complaint window")]
+    DisputeNotClosable,
 }

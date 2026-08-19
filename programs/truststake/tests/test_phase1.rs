@@ -694,7 +694,7 @@ fn test_conservation_asserted_onchain() {
     // fail. Built directly with `common::send` rather than through
     // `World::add_stake`, because that method's own `assert_invariants`
     // call would also (correctly) catch this mismatch and panic before
-    // the on-chain check gets a chance to run; this test is specifically
+    // the onchain check gets a chance to run; this test is specifically
     // about the runtime assertion, not the harness's own bookkeeping.
     let (event_authority, program) = event_cpi_accounts(&world.program_id);
     let instruction = Instruction::new_with_bytes(
