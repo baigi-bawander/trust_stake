@@ -28,6 +28,48 @@ happening on that branch. This section and the rest of this file get rewritten t
 that branch lands, per Phase 4 of that doc's build order — not incrementally per phase, so it
 doesn't get rewritten three times while the architecture is still moving.
 
+**Nothing is deployed on v2.** There is no live state and no migration concern, so a change
+that breaks an account layout is still cheap on this branch.
+
+**Build and test on this branch:** `anchor build`, then `OPENSSL_NO_VENDOR=1 cargo test` from
+`programs/truststake/`. The env var is required in this environment; without it the vendored
+OpenSSL build fails on a clock-skew check. LiteSVM loads the pre-built
+`target/deploy/truststake.so` rather than the native test binary, so any handler change needs
+`anchor build` before the tests reflect it. A `build.rs` guard fails the compile if that
+`.so` is stale. Current state is 119 tests, all passing.
+
+### Deliberate tradeoffs on v2-rebuild, not bugs
+
+`docs/DESIGN-v2.md` has an "Honest limitations" section with eleven entries, plus numbered
+design decisions. Those are considered and recorded, not oversights. Read them before
+reporting anything as a defect. The five most often mistaken for bugs:
+
+- **`INITIAL_ADMIN` is a hardcoded pubkey.** It stops a freshly deployed program having its
+  config front-run by whoever notices the deployment first. Authority moves off it afterwards
+  through the two-step transfer.
+- **`Marketplace.bond_bps` has a ceiling but no floor.** Zero is legal on purpose. A floor
+  would price out honest buyers with small claims.
+- **`SellerStake.disputes_total` only ever increases, and is inflatable.** The counters are a
+  convenience. Attack-resistant reputation is computed offchain from events, which carry the
+  marketplace.
+- **`Marketplace` keeps a single `prev_receipt_signer` slot, not a ring.** A second rotation
+  inside one complaint window overwrites the first. A cooldown was considered and rejected,
+  because it blocks the emergency it exists to handle.
+- **The vault conservation check is `>=`, not `==`.** This is a fix, not a slip: exact
+  equality let anyone brick a seller's vault by donating one token unit into it. The
+  dangerous direction, a vault holding less than its ledger, is still caught.
+
+### Review history on v2-rebuild
+
+Phases 1, 2 and 3 have each had their own security review, and the dispute lifecycle has had
+two dedicated passes including one adversarial pass that executed real exploit probes. The
+weak spot has consistently been **cross-phase interaction**, which phase-scoped review cannot
+see. Both of the worst bugs found so far lived there: a permit released and re-granted at the
+same address (Phase 2) interacting with a receipt's replay guard (Phase 3), which produced an
+actual double-slash of seller funds; and a PDA seed that did not name every identity it was
+the sole guard for, which permanently locked a buyer out of ever filing a complaint. Both are
+fixed. Assume a third of the same kind exists until you have checked.
+
 ## Deliberate simplifications, as of now
 
 - **Single arbiter key** (`resolve_dispute` only accepts one hardcoded authority via `Config`). A real deployment needs a multisig or DAO vote — this was scoped down for a testable MVP within a hackathon timeframe, not because multi-party arbitration is hard to justify.
