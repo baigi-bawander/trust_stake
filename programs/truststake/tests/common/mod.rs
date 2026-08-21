@@ -1442,9 +1442,15 @@ pub fn assert_invariants(world: &World) {
         let vault_pubkey = world.stake_vault_pda(&stake.seller);
         let vault = world.read_token_account(&vault_pubkey);
 
-        assert_eq!(
-            vault.amount, stake.staked,
-            "stake_vault balance must equal SellerStake.staked for {stake_pubkey}"
+        // Not exact equality: a token account accepts a transfer from
+        // anyone without its owner's consent, so an unsolicited deposit
+        // can push `vault.amount` above `stake.staked` without any
+        // handler having done anything wrong. Only a vault caught short
+        // of the ledger is a real problem, and that direction is still
+        // asserted (docs/DESIGN-v2.md, "Program conventions").
+        assert!(
+            vault.amount >= stake.staked,
+            "stake_vault balance must be at least SellerStake.staked for {stake_pubkey}"
         );
         let expected_committed = committed_by_seller.get(&stake.seller).copied().unwrap_or(0);
         assert_eq!(

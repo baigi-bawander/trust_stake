@@ -14,7 +14,7 @@ pub enum TrustStakeError {
     WrongMint,
     #[msg("Arithmetic overflow")]
     MathOverflow,
-    #[msg("Vault balance disagrees with the recorded ledger")]
+    #[msg("Vault balance is below the recorded ledger")]
     ConservationViolation,
     #[msg("Committed collateral would exceed staked collateral")]
     CommittedExceedsStaked,
@@ -44,6 +44,8 @@ pub enum TrustStakeError {
     WrongChainId,
     #[msg("Receipt is past its expiry")]
     ReceiptExpired,
+    #[msg("Receipt is dated further in the future than the allowed clock skew tolerance")]
+    ReceiptIssuedInFuture,
     #[msg("Complaint window for this receipt has closed")]
     ComplaintWindowClosed,
     #[msg("Receipt names a different marketplace")]
@@ -68,4 +70,6 @@ pub enum TrustStakeError {
     DisputeNotExpired,
     #[msg("Dispute's receipt is still inside its complaint window")]
     DisputeNotClosable,
+    #[msg("Dispute has passed its expiry and can only be expired, not resolved")]
+    DisputeExpired,
 }

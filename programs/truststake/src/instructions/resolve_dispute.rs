@@ -97,11 +97,21 @@ pub struct ResolveDisputeAccountConstraints<'info> {
 /// gives: without it a never-closed record is resolvable repeatedly,
 /// draining other buyers' bonds out of the shared vault and underflowing
 /// `open_disputes` past the release gate.
+///
+/// The second check, `now < dispute.expires_at`, is the exact complement
+/// of `expire_dispute`'s `now >= dispute.expires_at`: together they leave
+/// no instant where a dispute is neither resolvable nor expirable.
+/// Without it, `resolve_dispute` has no deadline of its own, so an
+/// arbiter can slash a seller long after the dispute became expirable,
+/// turning `DISPUTE_EXPIRY_SECONDS` into a race the arbiter always wins
+/// rather than the seller's protection docs/DESIGN-v2.md describes.
 pub fn handler(ctx: Context<ResolveDisputeAccountConstraints>, upheld: bool) -> Result<()> {
     require!(
         ctx.accounts.dispute.status == DisputeStatus::Open as u8,
         TrustStakeError::DisputeNotOpen
     );
+    let now = Clock::get()?.unix_timestamp;
+    require!(now < ctx.accounts.dispute.expires_at, TrustStakeError::DisputeExpired);
 
     let bond = ctx.accounts.dispute.bond;
     let claim = ctx.accounts.dispute.claim;
@@ -219,7 +229,7 @@ pub fn handler(ctx: Context<ResolveDisputeAccountConstraints>, upheld: bool) -> 
     )?;
 
     ctx.accounts.stake_vault.reload()?;
-    require_eq!(
+    require_gte!(
         ctx.accounts.stake_vault.amount,
         ctx.accounts.stake.staked,
         TrustStakeError::ConservationViolation

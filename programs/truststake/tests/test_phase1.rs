@@ -5,7 +5,7 @@
 
 mod common;
 
-use anchor_lang::{prelude::*, InstructionData, ToAccountMetas};
+use anchor_lang::{prelude::*, solana_program::program_pack::Pack, InstructionData, ToAccountMetas};
 use anchor_spl::{token::spl_token, token_2022::spl_token_2022};
 use common::{assert_error_code, event_cpi_accounts, initial_admin_keypair, usdc, World};
 use solana_instruction::Instruction;
@@ -674,28 +674,39 @@ fn test_conservation_asserted_onchain() {
     let seller_token_account = world.create_funded_token_account(world.mint, seller.pubkey(), usdc(300));
     world.add_stake(&seller, seller_token_account, usdc(100)).unwrap();
 
-    // Force a mismatch: move tokens into the vault directly via a bare
-    // Token Program instruction, bypassing this program entirely, so the
-    // vault's real balance disagrees with the ledger's `staked`.
+    // Force a mismatch in the direction that is still dangerous: shrink
+    // the vault's real balance below the ledger's `staked`, which is
+    // what a drain looks like. This can no longer be done with an
+    // ordinary instruction -- `stake_vault`'s token authority is the
+    // `stake` PDA, which nothing outside the program can sign for, so
+    // the vault can only ever be pushed *above* the ledger from the
+    // outside (a harmless direction; see
+    // test_stake_vault_donation_does_not_brick_the_seller in
+    // test_phase3.rs). The mismatch is written directly into account
+    // state via the harness instead, standing in for whatever bug would
+    // someday produce it.
     let vault = world.stake_vault_pda(&seller.pubkey());
-    let raw_transfer = spl_token::instruction::transfer(
-        &spl_token::ID,
-        &seller_token_account,
-        &vault,
-        &seller.pubkey(),
-        &[],
-        usdc(50),
-    )
-    .expect("build raw transfer instruction");
-    common::send(&mut world.svm, &[raw_transfer], &seller.pubkey(), &[&seller])
-        .expect("raw transfer into the vault succeeds");
+    let mut vault_account = world.svm.get_account(&vault).expect("vault exists");
+    let mut vault_state =
+        spl_token::state::Account::unpack(&vault_account.data).expect("valid token account data");
+    vault_state.amount -= usdc(50);
+    Pack::pack(vault_state, &mut vault_account.data).expect("repack the shrunk token account");
+    world
+        .svm
+        .set_account(vault, vault_account)
+        .expect("force the vault below the ledger");
 
     // The next handler that moves tokens must catch the mismatch and
     // fail. Built directly with `common::send` rather than through
     // `World::add_stake`, because that method's own `assert_invariants`
-    // call would also (correctly) catch this mismatch and panic before
-    // the onchain check gets a chance to run; this test is specifically
-    // about the runtime assertion, not the harness's own bookkeeping.
+    // call checks the same `vault.amount >= stake.staked` relation as the
+    // runtime check and would therefore also (correctly) catch this same
+    // deficit and panic before the onchain check gets a chance to run;
+    // this test is specifically about the runtime assertion, not the
+    // harness's own bookkeeping. A surplus, unlike a deficit, trips
+    // neither check any more (see
+    // test_stake_vault_donation_does_not_brick_the_seller in
+    // test_phase3.rs), so this test only has one direction left to prove.
     let (event_authority, program) = event_cpi_accounts(&world.program_id);
     let instruction = Instruction::new_with_bytes(
         world.program_id,

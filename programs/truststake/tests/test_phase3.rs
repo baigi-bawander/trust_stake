@@ -27,7 +27,8 @@ use solana_system_interface::error::SystemError;
 use solana_transaction::versioned::VersionedTransaction;
 use truststake::{
     constants::{
-        DISPUTE_EXPIRY_SECONDS, MAX_BOND_BPS, MIN_COMPLAINT_WINDOW_SECONDS, RECEIPT_DOMAIN, SECONDS_PER_DAY,
+        CLOCK_SKEW_TOLERANCE_SECONDS, DISPUTE_EXPIRY_SECONDS, MAX_BOND_BPS, MAX_COMPLAINT_WINDOW_SECONDS,
+        MIN_COMPLAINT_WINDOW_SECONDS, RECEIPT_DOMAIN, SECONDS_PER_DAY,
     },
     error::TrustStakeError,
     receipt::OrderReceipt,
@@ -992,7 +993,9 @@ fn test_raise_dispute_succeeds() {
     assert_eq!(dispute.bond, usdc(8));
     assert_eq!(dispute.created_at, filed_at);
     assert_eq!(dispute.expires_at, filed_at + DISPUTE_EXPIRY_SECONDS);
-    assert_eq!(dispute.closable_after, receipt.issued_at + MIN_COMPLAINT_WINDOW_SECONDS);
+    // Bound to the protocol-wide maximum, not this marketplace's own
+    // (shorter) window: see raise_dispute's handler doc comment.
+    assert_eq!(dispute.closable_after, receipt.issued_at + MAX_COMPLAINT_WINDOW_SECONDS);
     assert_eq!(dispute.status, DisputeStatus::Open as u8);
 
     assert_eq!(world.token_balance(&buyer_token_account), usdc(92));
@@ -1154,6 +1157,71 @@ fn test_dispute_rejects_expired_receipt() {
             usdc(80),
         )
         .expect("a receipt one second from expiry still files");
+}
+
+#[test]
+fn test_dispute_rejects_receipt_issued_in_future() {
+    // `receipt.expires_at > now` and `now < issued_at + complaint_window`
+    // both pass for a receipt dated years ahead: the first because its
+    // expiry is computed from that same future `issued_at`, the second
+    // because a future `issued_at` only pushes the window further out.
+    // Nothing before this check bounds `issued_at` against the wall
+    // clock at all, so a receipt dated years ahead would push
+    // `closable_after` out by the same margin and make
+    // `MAX_COMPLAINT_WINDOW_SECONDS` meaningless as a real deadline.
+    let Scenario {
+        mut world,
+        market,
+        seller,
+        buyer,
+        buyer_token_account,
+        ..
+    } = scenario(58);
+
+    let now = world.now();
+    let mut receipt = receipt_for(&world, &market, &seller, &buyer, order_id(0xE1), usdc(80));
+
+    // Years ahead: comfortably outside any reasonable clock skew.
+    receipt.issued_at = now + 400 * SECONDS_PER_DAY;
+    receipt.expires_at = receipt.issued_at + RECEIPT_LIFETIME;
+    let result = world.raise_dispute(
+        &buyer,
+        buyer_token_account,
+        market.pubkey,
+        &receipt,
+        &market.receipt_signer,
+        usdc(80),
+    );
+    assert_error_code(&result, u32::from(TrustStakeError::ReceiptIssuedInFuture));
+
+    // One second past the tolerance: still refused.
+    world.svm.expire_blockhash();
+    receipt.issued_at = now + CLOCK_SKEW_TOLERANCE_SECONDS + 1;
+    receipt.expires_at = receipt.issued_at + RECEIPT_LIFETIME;
+    let result = world.raise_dispute(
+        &buyer,
+        buyer_token_account,
+        market.pubkey,
+        &receipt,
+        &market.receipt_signer,
+        usdc(80),
+    );
+    assert_error_code(&result, u32::from(TrustStakeError::ReceiptIssuedInFuture));
+
+    // Exactly at the tolerance: an honest clock-skew case, and it files.
+    world.svm.expire_blockhash();
+    receipt.issued_at = now + CLOCK_SKEW_TOLERANCE_SECONDS;
+    receipt.expires_at = receipt.issued_at + RECEIPT_LIFETIME;
+    world
+        .raise_dispute(
+            &buyer,
+            buyer_token_account,
+            market.pubkey,
+            &receipt,
+            &market.receipt_signer,
+            usdc(80),
+        )
+        .expect("a receipt exactly at the clock-skew tolerance still files");
 }
 
 #[test]
@@ -1452,7 +1520,12 @@ fn test_dispute_replay_blocked_after_close() {
     // gone the address is free again, and the only thing left stopping
     // the same receipt from being filed a second time is that it has aged
     // out of its complaint window -- which is exactly the moment
-    // `close_dispute` waits for.
+    // `close_dispute` waits for. `closable_after` is bound to
+    // `MAX_COMPLAINT_WINDOW_SECONDS`, not this marketplace's 2-day
+    // window (see raise_dispute's handler doc comment), so the receipt
+    // is given a longer life than that bound: otherwise its own expiry,
+    // not the window this test is about, would be what blocks the
+    // replay.
     let Scenario {
         mut world,
         market,
@@ -1462,7 +1535,10 @@ fn test_dispute_replay_blocked_after_close() {
         ..
     } = scenario(25);
 
-    let receipt = receipt_for(&world, &market, &seller, &buyer, order_id(0xCD), usdc(80));
+    let receipt = OrderReceipt {
+        expires_at: world.now() + MAX_COMPLAINT_WINDOW_SECONDS + SECONDS_PER_DAY,
+        ..receipt_for(&world, &market, &seller, &buyer, order_id(0xCD), usdc(80))
+    };
     world
         .raise_dispute(
             &buyer,
@@ -1477,7 +1553,7 @@ fn test_dispute_replay_blocked_after_close() {
         .resolve_dispute(&market.arbiter, market.pubkey, receipt.order_id, buyer_token_account, false)
         .unwrap();
 
-    world.warp_seconds(MIN_COMPLAINT_WINDOW_SECONDS);
+    world.warp_seconds(MAX_COMPLAINT_WINDOW_SECONDS);
     let caller = funded_keypair(&mut world);
     world
         .close_dispute(&caller, market.pubkey, receipt.order_id)
@@ -1497,6 +1573,102 @@ fn test_dispute_replay_blocked_after_close() {
         usdc(80),
     );
     assert_error_code(&result, u32::from(TrustStakeError::ComplaintWindowClosed));
+}
+
+#[test]
+fn test_dispute_replay_blocked_across_regrant_with_longer_window() {
+    // The exploit `closable_after`'s new formula closes: a permit PDA
+    // carries no nonce, so a seller can revoke, wait out the window,
+    // release, and re-grant at the same address once the marketplace has
+    // raised its complaint window. If `closable_after` were still frozen
+    // from the window in effect when the dispute was filed, the record
+    // would become closable -- and its PDA free for the very same
+    // receipt to be replayed -- before the re-granted permit's own
+    // (longer) window would otherwise have allowed it. That is a real
+    // double-slash: the seller pays out on the same order twice.
+    let Scenario {
+        mut world,
+        market,
+        seller,
+        buyer,
+        buyer_token_account,
+        ..
+    } = scenario(59);
+
+    let receipt = receipt_for(&world, &market, &seller, &buyer, order_id(0xE0), usdc(80));
+    let issued_at = receipt.issued_at;
+    world
+        .raise_dispute(
+            &buyer,
+            buyer_token_account,
+            market.pubkey,
+            &receipt,
+            &market.receipt_signer,
+            usdc(80),
+        )
+        .expect("the first filing succeeds");
+    world
+        .resolve_dispute(&market.arbiter, market.pubkey, receipt.order_id, buyer_token_account, false)
+        .expect("resolve_dispute succeeds");
+
+    // Revoke, wait out the permit's own (2-day) window, and release: the
+    // seller is now free to re-grant at this marketplace.
+    world
+        .revoke_permit(&seller, market.pubkey)
+        .expect("revoke_permit succeeds");
+    world.warp_seconds(MIN_COMPLAINT_WINDOW_SECONDS);
+    let caller = funded_keypair(&mut world);
+    world
+        .release_permit(&caller, seller.pubkey(), market.pubkey)
+        .expect("release_permit succeeds");
+
+    // The marketplace raises its window to the protocol ceiling, and the
+    // re-grant copies it onto a fresh permit.
+    world
+        .update_marketplace(
+            &market.authority,
+            market.pubkey,
+            None,
+            None,
+            Some(MAX_COMPLAINT_WINDOW_SECONDS),
+            None,
+        )
+        .expect("update_marketplace succeeds");
+    // Identical to the grant `scenario` already issued, so without a
+    // fresh blockhash this would collide with that earlier transaction
+    // rather than exercising the re-grant.
+    world.svm.expire_blockhash();
+    world
+        .grant_permit(&seller, market.pubkey, usdc(150))
+        .expect("grant_permit succeeds");
+
+    // Exactly the instant the *original* 2-day window closed: old enough
+    // that a `closable_after` frozen from that window would already let
+    // `close_dispute` free the PDA, nowhere near old enough for the new
+    // 30-day window to have closed the same receipt.
+    assert_eq!(world.now(), issued_at + MIN_COMPLAINT_WINDOW_SECONDS);
+
+    // Whether this succeeds or fails is exactly what distinguishes the
+    // fixed behaviour from the bug: fixed, `closable_after` is still 28
+    // days out, so this is refused and the record survives as the replay
+    // guard it always was. The result is deliberately not asserted here
+    // -- the real proof is that the replay below fails regardless of what
+    // happened to this record.
+    let _ = world.close_dispute(&caller, market.pubkey, receipt.order_id);
+
+    world.svm.expire_blockhash();
+    let result = world.raise_dispute(
+        &buyer,
+        buyer_token_account,
+        market.pubkey,
+        &receipt,
+        &market.receipt_signer,
+        usdc(80),
+    );
+    assert!(
+        result.is_err(),
+        "the same receipt must not be filable again through a revoke/release/re-grant cycle that only widens the window"
+    );
 }
 
 #[test]
@@ -2600,6 +2772,70 @@ fn test_abandoned_marketplace_does_not_trap_seller() {
 }
 
 #[test]
+fn test_stake_vault_donation_does_not_brick_the_seller() {
+    // A token account accepts a transfer from anyone without its owner's
+    // consent, and no handler recomputes `stake.staked` from the vault --
+    // every write to it is a delta -- so an unrelated third party can
+    // always push `stake_vault.amount` above the ledger by donating into
+    // it directly. Before the vault/ledger check relaxed to `>=`, that
+    // single deposit permanently bricked the seller: every handler that
+    // moves tokens demanded exact equality, so the seller could never
+    // again withdraw, top up collateral, or have a dispute against them
+    // resolved. None of this requires anyone to be malicious; a buyer who
+    // fat-fingers a refund straight to the vault address has the same
+    // effect.
+    let Scenario {
+        mut world,
+        market,
+        seller,
+        seller_token_account,
+        buyer,
+        buyer_token_account,
+    } = scenario(61);
+
+    let stranger = funded_keypair(&mut world);
+    let stranger_token_account = world.create_funded_token_account(world.mint, stranger.pubkey(), 1);
+    let vault = world.stake_vault_pda(&seller.pubkey());
+    let donation = anchor_spl::token::spl_token::instruction::transfer(
+        &anchor_spl::token::spl_token::ID,
+        &stranger_token_account,
+        &vault,
+        &stranger.pubkey(),
+        &[],
+        1,
+    )
+    .expect("build donation instruction");
+    common::send(&mut world.svm, &[donation], &stranger.pubkey(), &[&stranger])
+        .expect("an unsolicited deposit into the vault succeeds: a token account takes transfers from anyone");
+
+    // The seller can still withdraw uncommitted collateral...
+    world
+        .withdraw_stake(&seller, seller_token_account, usdc(50))
+        .expect("withdrawal still succeeds after a donation into the vault");
+
+    // ...can still add more...
+    world
+        .add_stake(&seller, seller_token_account, usdc(10))
+        .expect("adding more stake still succeeds after a donation into the vault");
+
+    // ...and a dispute against them can still be resolved.
+    let receipt = receipt_for(&world, &market, &seller, &buyer, order_id(0xE2), usdc(80));
+    world
+        .raise_dispute(
+            &buyer,
+            buyer_token_account,
+            market.pubkey,
+            &receipt,
+            &market.receipt_signer,
+            usdc(80),
+        )
+        .expect("raise_dispute still succeeds after a donation into the vault");
+    world
+        .resolve_dispute(&market.arbiter, market.pubkey, receipt.order_id, buyer_token_account, true)
+        .expect("resolve_dispute still succeeds after a donation into the vault");
+}
+
+#[test]
 fn test_window_boundary_exact() {
     // The complaint window is inclusive at the start and exclusive at the
     // end: the handler requires `now < issued_at + complaint_window`.
@@ -2676,6 +2912,68 @@ fn test_expiry_boundary_exact() {
     world
         .expire_dispute(&caller, market.pubkey, receipt.order_id, buyer_token_account)
         .expect("expiry exactly at the deadline succeeds");
+}
+
+#[test]
+fn test_resolve_dispute_rejects_after_expiry() {
+    // The exact complement of `test_expiry_boundary_exact`: past
+    // `expires_at`, `resolve_dispute` must refuse and `expire_dispute`
+    // must be the only path left. Without this gate, an arbiter could
+    // slash a seller long after the dispute became expirable, turning
+    // `DISPUTE_EXPIRY_SECONDS` into a race the arbiter always wins rather
+    // than the seller's protection it is meant to be.
+    let Scenario {
+        mut world,
+        market,
+        seller,
+        buyer,
+        buyer_token_account,
+        ..
+    } = scenario(60);
+
+    let first = receipt_for(&world, &market, &seller, &buyer, order_id(0x15), usdc(80));
+    let second = receipt_for(&world, &market, &seller, &buyer, order_id(0x16), usdc(80));
+    assert_eq!(first.issued_at, second.issued_at);
+
+    world
+        .raise_dispute(
+            &buyer,
+            buyer_token_account,
+            market.pubkey,
+            &first,
+            &market.receipt_signer,
+            usdc(80),
+        )
+        .unwrap();
+    world
+        .raise_dispute(
+            &buyer,
+            buyer_token_account,
+            market.pubkey,
+            &second,
+            &market.receipt_signer,
+            usdc(80),
+        )
+        .unwrap();
+
+    // One second before the deadline: still resolvable.
+    world.warp_seconds(DISPUTE_EXPIRY_SECONDS - 1);
+    world
+        .resolve_dispute(&market.arbiter, market.pubkey, first.order_id, buyer_token_account, false)
+        .expect("resolving one second before expiry still succeeds");
+
+    // Exactly on it: resolution is refused...
+    world.svm.expire_blockhash();
+    world.warp_seconds(1);
+    let result = world.resolve_dispute(&market.arbiter, market.pubkey, second.order_id, buyer_token_account, false);
+    assert_error_code(&result, u32::from(TrustStakeError::DisputeExpired));
+
+    // ...and expiry is the only path left, exactly where
+    // `test_expiry_boundary_exact` shows it opening.
+    let caller = funded_keypair(&mut world);
+    world
+        .expire_dispute(&caller, market.pubkey, second.order_id, buyer_token_account)
+        .expect("expire_dispute still succeeds at the same instant resolve_dispute is refused");
 }
 
 #[test]
@@ -2825,7 +3123,9 @@ fn test_rent_refund_on_close() {
     let result = world.close_dispute(&caller, market.pubkey, receipt.order_id);
     assert_error_code(&result, u32::from(TrustStakeError::DisputeNotClosable));
 
-    world.warp_seconds(MIN_COMPLAINT_WINDOW_SECONDS);
+    // `closable_after` is bound to `MAX_COMPLAINT_WINDOW_SECONDS`, not
+    // this marketplace's own (shorter) window.
+    world.warp_seconds(MAX_COMPLAINT_WINDOW_SECONDS);
     world.svm.expire_blockhash();
 
     // Snapshot immediately before the one transaction that should move

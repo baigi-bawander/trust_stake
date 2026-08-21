@@ -3,8 +3,9 @@ use anchor_spl::token_interface::{transfer_checked, Mint, TokenAccount, TokenInt
 
 use crate::{
     constants::{
-        ACCOUNT_VERSION, BOND_VAULT_SEED, BPS_DENOMINATOR, CONFIG_SEED, DISPUTE_EXPIRY_SECONDS, DISPUTE_SEED,
-        MARKETPLACE_SEED, PERMIT_SEED, RECEIPT_DOMAIN, SEED_VERSION, STAKE_SEED,
+        ACCOUNT_VERSION, BOND_VAULT_SEED, BPS_DENOMINATOR, CLOCK_SKEW_TOLERANCE_SECONDS, CONFIG_SEED,
+        DISPUTE_EXPIRY_SECONDS, DISPUTE_SEED, MARKETPLACE_SEED, MAX_COMPLAINT_WINDOW_SECONDS, PERMIT_SEED,
+        RECEIPT_DOMAIN, SEED_VERSION, STAKE_SEED,
     },
     ed25519::{verify_signed_receipt, SignedReceipt},
     error::TrustStakeError,
@@ -111,6 +112,19 @@ pub struct RaiseDisputeAccountConstraints<'info> {
 /// (checks, effects, interactions); the design doc's step 10 lists the
 /// transfer and the counters together without ordering them against each
 /// other.
+///
+/// `closable_after` is stored as `receipt.issued_at +
+/// MAX_COMPLAINT_WINDOW_SECONDS`, never the live permit's own (possibly
+/// shorter) window: a permit PDA carries no nonce, so a seller can
+/// revoke, wait out the window, release, and re-grant at the same
+/// address under a marketplace that has since raised its complaint
+/// window. A `closable_after` frozen from the window in effect at filing
+/// time would let that re-grant outlive the record that blocks this same
+/// receipt from being replayed. Every permit's window is bounded to
+/// `MAX_COMPLAINT_WINDOW_SECONDS` at grant time, so that constant is a
+/// true upper bound for any permit that could ever occupy the PDA -- the
+/// accepted cost is that a buyer's rent refund can wait up to 30 days
+/// even on a marketplace with a 2-day window.
 pub fn handler(ctx: Context<RaiseDisputeAccountConstraints>, order_id: [u8; 32], claim: u64) -> Result<()> {
     let SignedReceipt { signer, receipt } =
         verify_signed_receipt(&ctx.accounts.instructions_sysvar.to_account_info())?;
@@ -156,6 +170,10 @@ pub fn handler(ctx: Context<RaiseDisputeAccountConstraints>, order_id: [u8; 32],
         .checked_add(ctx.accounts.permit.complaint_window)
         .ok_or(TrustStakeError::MathOverflow)?;
     require!(now < window_closes_at, TrustStakeError::ComplaintWindowClosed);
+    require!(
+        receipt.issued_at <= now.checked_add(CLOCK_SKEW_TOLERANCE_SECONDS).ok_or(TrustStakeError::MathOverflow)?,
+        TrustStakeError::ReceiptIssuedInFuture
+    );
 
     // 6. Every party named in the signed receipt is the party actually
     // passed in. A valid signature over someone else's order must not be
@@ -188,6 +206,14 @@ pub fn handler(ctx: Context<RaiseDisputeAccountConstraints>, order_id: [u8; 32],
 
     let bond = bond_for(claim, permit.bond_bps)?;
 
+    // The stored replay guard's expiry, unlike `window_closes_at` above:
+    // see the handler doc comment for why this must be the protocol-wide
+    // maximum rather than this permit's own window.
+    let closable_after = receipt
+        .issued_at
+        .checked_add(MAX_COMPLAINT_WINDOW_SECONDS)
+        .ok_or(TrustStakeError::MathOverflow)?;
+
     // 9 and 10. The record is created, then the counters, then the bond
     // moves.
     ctx.accounts.dispute.set_inner(DisputeRecord {
@@ -203,7 +229,7 @@ pub fn handler(ctx: Context<RaiseDisputeAccountConstraints>, order_id: [u8; 32],
         expires_at: now
             .checked_add(DISPUTE_EXPIRY_SECONDS)
             .ok_or(TrustStakeError::MathOverflow)?,
-        closable_after: window_closes_at,
+        closable_after,
         status: DisputeStatus::Open as u8,
         reserved: [0; 32],
     });
@@ -258,7 +284,7 @@ pub fn handler(ctx: Context<RaiseDisputeAccountConstraints>, order_id: [u8; 32],
         claim,
         bond,
         expires_at: ctx.accounts.dispute.expires_at,
-        closable_after: window_closes_at,
+        closable_after,
     });
 
     Ok(())

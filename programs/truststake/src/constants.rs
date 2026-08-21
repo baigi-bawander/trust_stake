@@ -53,3 +53,15 @@ pub const BPS_DENOMINATOR: u16 = 10_000;
 /// the seller's protection against the marketplace that judges the
 /// complaint, so the marketplace does not get to choose it.
 pub const DISPUTE_EXPIRY_SECONDS: i64 = 30 * SECONDS_PER_DAY;
+
+/// How far ahead of the onchain clock a receipt's `issued_at` may be
+/// dated and still pass `raise_dispute`. A hard `issued_at <= now` is too
+/// strict: Solana's onchain clock and a marketplace's signing server are
+/// not synchronised, and the chain clock has historically lagged real
+/// time, so a receipt signed at the honest instant it is issued can still
+/// arrive with `issued_at` slightly ahead of `Clock::get()`. One hour is
+/// negligible against the 30-day windows this protocol deals in, but
+/// closes off a receipt dated years ahead, which would otherwise push
+/// `closable_after` out by the same margin and leave the record's rent
+/// stuck for as long.
+pub const CLOCK_SKEW_TOLERANCE_SECONDS: i64 = 60 * 60;

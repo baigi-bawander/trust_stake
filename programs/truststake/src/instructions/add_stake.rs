@@ -49,8 +49,12 @@ pub struct AddStakeAccountConstraints<'info> {
 /// Moves `amount` of collateral from the seller's own token account into
 /// `stake_vault`. State is written before the transfer CPI (checks, then
 /// effects, then interactions), and the vault is reloaded and checked
-/// against the ledger afterwards so a mismatch fails the transaction
-/// instead of silently drifting.
+/// against the ledger afterwards: a token account accepts a transfer from
+/// anyone without its owner's consent, so `stake_vault.amount` can run
+/// ahead of `stake.staked` from an unsolicited deposit alone, and that
+/// direction is harmless surplus rather than a bug. Only a vault caught
+/// *short* of the ledger -- what a drain looks like -- fails the
+/// transaction; see docs/DESIGN-v2.md, "Program conventions".
 pub fn handler(ctx: Context<AddStakeAccountConstraints>, amount: u64) -> Result<()> {
     require!(amount > 0, TrustStakeError::ZeroAmount);
 
@@ -75,7 +79,7 @@ pub fn handler(ctx: Context<AddStakeAccountConstraints>, amount: u64) -> Result<
     )?;
 
     ctx.accounts.stake_vault.reload()?;
-    require_eq!(
+    require_gte!(
         ctx.accounts.stake_vault.amount,
         ctx.accounts.stake.staked,
         TrustStakeError::ConservationViolation

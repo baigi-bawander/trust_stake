@@ -53,7 +53,11 @@ pub struct WithdrawStakeAccountConstraints<'info> {
 /// immediately, but nothing backing an active permit can leave. State is
 /// written before the transfer CPI, which is signed by the `stake` PDA
 /// since it is `stake_vault`'s token authority, and the vault is reloaded
-/// and checked against the ledger afterward.
+/// and checked against the ledger afterward: only a vault caught short of
+/// `stake.staked` fails the transaction, not one sitting above it, since
+/// anyone can push the vault above the ledger with an unsolicited deposit
+/// and that must not be able to freeze a seller's own withdrawal (see
+/// docs/DESIGN-v2.md, "Program conventions").
 pub fn handler(ctx: Context<WithdrawStakeAccountConstraints>, amount: u64) -> Result<()> {
     require!(amount > 0, TrustStakeError::ZeroAmount);
 
@@ -89,7 +93,7 @@ pub fn handler(ctx: Context<WithdrawStakeAccountConstraints>, amount: u64) -> Re
     )?;
 
     ctx.accounts.stake_vault.reload()?;
-    require_eq!(
+    require_gte!(
         ctx.accounts.stake_vault.amount,
         ctx.accounts.stake.staked,
         TrustStakeError::ConservationViolation
