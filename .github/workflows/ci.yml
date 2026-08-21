@@ -1,0 +1,97 @@
+# Compile-and-lint-only CI. Deliberately does not run `cargo test`.
+#
+# The suite's every test transitively depends on `initialize_config`
+# succeeding, which accepts only the one signer hardcoded as
+# `constants::INITIAL_ADMIN` -- the real deploy wallet, and per its own
+# doc comment likely also the program's upgrade authority. Running the
+# suite here would mean that private key living in CI, which is not
+# acceptable: beyond the usual CI-secret exposure (fork PRs, compromised
+# actions, log leakage), `cargo test`/`cargo check` execute `build.rs`
+# from every dependency in the tree with full access to the process
+# environment, so a compromised transitive dependency -- not even a
+# malicious PR against this repo -- could exfiltrate it. See
+# docs/TESTING.md for the full reasoning and what this trades away.
+#
+# What this job still catches without that key: compile errors in the
+# program and in the test harness itself (`cargo check --tests` type-checks
+# `tests/common/mod.rs` and all three phase files without executing
+# anything in them), clippy regressions, and -- via
+# programs/truststake/build.rs -- a `target/deploy/*.so` that is missing or
+# older than the source that built it. It proves nothing about behaviour;
+# run `anchor build && cargo test` locally before merging, same as
+# docs/TESTING.md says to.
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-check-clippy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # rust-toolchain.toml pins the exact Rust version and the
+      # rustfmt/clippy components; rustup reads it automatically on the
+      # first `cargo`/`rustup` call below, so the version is never
+      # duplicated into this file.
+      - name: Show the toolchain rust-toolchain.toml selects
+        run: rustup show
+
+      - name: Cache Cargo registry, anchor-cli, and build output
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cargo/bin/anchor
+            ~/.cache/solana
+            target
+          # anchor-cli's pinned version is part of the key so a future
+          # version bump invalidates the cache instead of silently
+          # reusing a stale binary; Cargo.lock covers everything else.
+          key: ${{ runner.os }}-cargo-anchor1.1.2-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-anchor1.1.2-
+
+      # Pinned to 1.1.2 to match anchor-lang/anchor-spl's exact pin in
+      # programs/truststake/Cargo.toml (docs/DESIGN-v2.md, Phase 0): the
+      # CLI and the crates it scaffolds against have to move together, or
+      # the CLI just warns on every invocation. `cargo install` no-ops if
+      # this exact version is already present, which the cache above makes
+      # the common case.
+      - name: Install anchor-cli 1.1.2
+        run: cargo install anchor-cli --version 1.1.2 --locked
+
+      - name: Install the Solana CLI (Agave)
+        run: |
+          curl -sSfL https://release.anza.xyz/stable/install -o /tmp/solana-install.sh
+          sh /tmp/solana-install.sh
+          echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
+
+      # anchor's provider config expects a wallet file to exist even to
+      # build. Throwaway and never used to sign anything: this job runs
+      # no transactions, so it never needs to match INITIAL_ADMIN.
+      - name: Create a throwaway wallet for anchor's provider config
+        run: |
+          mkdir -p ~/.config/solana
+          solana-keygen new --no-bip39-passphrase -s -o ~/.config/solana/id.json
+
+      # target/ is gitignored, so a fresh checkout has no committed
+      # program keypairs and anchor generates fresh ones that do not
+      # match declare_id!'s hardcoded program IDs. --ignore-keys skips
+      # that mismatch check rather than running `anchor keys sync` (which
+      # would rewrite the program IDs). LiteSVM tests read the ID from
+      # declare_id! directly and never touch this keypair file, so build
+      # correctness here does not depend on it either way.
+      - name: anchor build
+        run: anchor build --ignore-keys
+
+      - name: cargo check (lib and tests)
+        working-directory: programs/truststake
+        run: cargo check --tests
+
+      - name: cargo clippy (lib and tests)
+        working-directory: programs/truststake
+        run: cargo clippy --tests
