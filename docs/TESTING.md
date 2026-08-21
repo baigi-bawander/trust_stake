@@ -306,6 +306,11 @@ anyone to be malicious.
 - `test_abandoned_marketplace_does_not_trap_seller`: the marketplace shuts down and its
   arbiter key is never used again. Expiry must free the seller. Same code path as the
   malicious freeze, different story, and the story is the more likely one.
+- `test_dispute_seed_includes_seller`: two different sellers on one marketplace happen to
+  reuse the same `order_id` -- the natural outcome of per-seller order numbering, which
+  nothing forbids. Both buyers hold genuine receipts and both complaints must succeed. Before
+  the `DisputeRecord` seed included the seller, the second complaint collided with the
+  first's PDA and was refused, permanently.
 - `test_window_boundary_exact`: a complaint filed at exactly `issued_at + complaint_window`
   and one second either side. Assert which side is inclusive and that it matches the doc.
 - `test_expiry_boundary_exact`: the same for the 30-day dispute deadline.

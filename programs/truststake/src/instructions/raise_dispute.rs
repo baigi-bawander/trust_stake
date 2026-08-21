@@ -66,7 +66,7 @@ pub struct RaiseDisputeAccountConstraints<'info> {
         init,
         payer = buyer,
         space = DisputeRecord::DISCRIMINATOR.len() + DisputeRecord::INIT_SPACE,
-        seeds = [DISPUTE_SEED, SEED_VERSION, marketplace.key().as_ref(), order_id.as_ref()],
+        seeds = [DISPUTE_SEED, SEED_VERSION, marketplace.key().as_ref(), stake.seller.as_ref(), order_id.as_ref()],
         bump,
     )]
     pub dispute: Box<Account<'info, DisputeRecord>>,

@@ -322,12 +322,27 @@ impl World {
         .0
     }
 
-    pub fn dispute_pda(&self, marketplace: &Pubkey, order_id: &[u8; 32]) -> Pubkey {
+    pub fn dispute_pda(&self, marketplace: &Pubkey, seller: &Pubkey, order_id: &[u8; 32]) -> Pubkey {
         Pubkey::find_program_address(
-            &[DISPUTE_SEED, SEED_VERSION, marketplace.as_ref(), order_id.as_ref()],
+            &[DISPUTE_SEED, SEED_VERSION, marketplace.as_ref(), seller.as_ref(), order_id.as_ref()],
             &self.program_id,
         )
         .0
+    }
+
+    /// Looks a dispute up by marketplace and order among tracked records
+    /// rather than re-deriving its PDA: the seed also includes the
+    /// seller, which these callers only learn by reading the record they
+    /// are trying to find.
+    fn find_dispute(&self, marketplace: &Pubkey, order_id: &[u8; 32]) -> Pubkey {
+        self.disputes
+            .iter()
+            .copied()
+            .find(|pubkey| {
+                self.try_read_dispute(pubkey)
+                    .is_some_and(|dispute| dispute.marketplace == *marketplace && dispute.order_id == *order_id)
+            })
+            .unwrap_or_else(|| panic!("no tracked dispute for marketplace {marketplace} order {order_id:?}"))
     }
 
     // ---- account readers ----
@@ -1173,7 +1188,7 @@ impl World {
                 marketplace,
                 stake: self.stake_pda(&seller),
                 permit: self.permit_pda(&seller, &marketplace),
-                dispute: self.dispute_pda(&marketplace, &order_id),
+                dispute: self.dispute_pda(&marketplace, &seller, &order_id),
                 bond_vault: self.bond_vault_pda(&marketplace),
                 mint: self.mint,
                 buyer_token_account,
@@ -1195,10 +1210,11 @@ impl World {
         instructions: &[Instruction],
         buyer: &Keypair,
         marketplace: Pubkey,
+        seller: Pubkey,
         order_id: [u8; 32],
     ) -> TransactionResult {
         let result = send(&mut self.svm, instructions, &buyer.pubkey(), &[buyer]);
-        let dispute = self.dispute_pda(&marketplace, &order_id);
+        let dispute = self.dispute_pda(&marketplace, &seller, &order_id);
         if result.is_ok() && !self.disputes.contains(&dispute) {
             self.disputes.push(dispute);
         }
@@ -1259,6 +1275,7 @@ impl World {
             &[verify_instruction, raise_instruction],
             buyer,
             marketplace,
+            seller,
             order_id,
         )
     }
@@ -1271,7 +1288,7 @@ impl World {
         buyer_token_account: Pubkey,
         upheld: bool,
     ) -> TransactionResult {
-        let dispute = self.dispute_pda(&marketplace, &order_id);
+        let dispute = self.find_dispute(&marketplace, &order_id);
         let seller = self.read_dispute(&dispute).seller;
         let (event_authority, program) = event_cpi_accounts(&self.program_id);
 
@@ -1310,7 +1327,7 @@ impl World {
         order_id: [u8; 32],
         buyer_token_account: Pubkey,
     ) -> TransactionResult {
-        let dispute = self.dispute_pda(&marketplace, &order_id);
+        let dispute = self.find_dispute(&marketplace, &order_id);
         let seller = self.read_dispute(&dispute).seller;
         let (event_authority, program) = event_cpi_accounts(&self.program_id);
 
@@ -1340,7 +1357,7 @@ impl World {
     /// Permissionless too; `buyer` is read off the record rather than
     /// passed, since it is the rent destination and nothing else.
     pub fn close_dispute(&mut self, caller: &Keypair, marketplace: Pubkey, order_id: [u8; 32]) -> TransactionResult {
-        let dispute = self.dispute_pda(&marketplace, &order_id);
+        let dispute = self.find_dispute(&marketplace, &order_id);
         let buyer = self.read_dispute(&dispute).buyer;
         let (event_authority, program) = event_cpi_accounts(&self.program_id);
 

@@ -141,6 +141,28 @@ Each of these is a decision with a reason, not an oversight.
   decline before taking on any risk, and because a marketplace already holds a larger lever
   in its own arbiter. The mitigation belongs in whatever interface shows a seller the terms
   before they grant a permit.
+- **A marketplace can grind down `SellerStake.disputes_total` and `disputes_lost` against its
+  own seller, and every other marketplace that seller sells on inherits the damage.** Both
+  counters live on the one global `SellerStake` per seller (decision 1) and only ever
+  increment: `disputes_total` in `raise_dispute`, `disputes_lost` in the upheld branch of
+  `resolve_dispute`. Since `validate_marketplace_settings` bounds `bond_bps` only by
+  `MAX_BOND_BPS`, with no floor, a marketplace running a zero-bond permit can raise a
+  complaint from a throwaway buyer account against its own seller, using a receipt it signed
+  itself, and reject it with its own arbiter: no collateral moves, no complaint is upheld, and
+  the cost is transaction fees alone, roughly 15,000 lamports for the three signed
+  transactions one full cycle takes (raise, resolve, and the eventual close that reclaims the
+  record's rent). Because the account is global, every other marketplace that seller sells on
+  reads the same degraded number, not only the one that filed. Left legal rather than fixed,
+  for three reasons. There is no protocol-enforced minimum bond: a zero bond is a legitimate
+  choice for some marketplaces, and a floor would also price out honest buyers with small
+  claims. The counters were not moved onto `SlashPermit` either: the seller controls permit
+  release, so a per-permit counter would let a seller reset their own record by revoking and
+  re-granting, which is strictly worse than a counter a marketplace can pad. And the counters
+  were never meant to be the trust source: `DisputeRaised`, `DisputeResolved` and
+  `DisputeExpired` all carry the marketplace's pubkey, so per-marketplace dispute history is
+  computable offchain, exactly as this document already relies on for buyer history. A
+  consumer that wants attack-resistant seller reputation has to read events and weight by
+  marketplace, not read `stake.disputes_total` on its own.
 
 ---
 
@@ -154,8 +176,14 @@ Published as part of the interface, because the program cannot enforce them.
 - **Show buyers the permit at *this* marketplace, never the seller's total collateral.** A
   seller with $300 staked and a $150 permit here is backed by $150 here. Showing $300 is
   false in the direction that matters.
-- **Order IDs must be unique within a marketplace, forever.** A reused ID collides with the
-  existing complaint PDA and blocks the second complaint from ever being filed.
+- **Order IDs must be unique per seller within a marketplace, forever.** A reused ID from the
+  same seller collides with the existing complaint PDA and blocks the second complaint from
+  ever being filed. Two different sellers on the same marketplace may reuse an order ID
+  freely: the `DisputeRecord` seed includes the seller precisely so this does not collide.
+  (Earlier versions of this rule said "unique within a marketplace," full stop, with no
+  seller in the seed -- a footgun, because per-seller order numbering is the natural way to
+  implement order IDs, and nothing about "unique within a marketplace" reads as forbidding
+  it.)
 - **Keep the receipt-signer key and the arbiter key separate**, and separate from the
   authority key. Compromise of any one alone cannot move money.
 
@@ -310,7 +338,7 @@ SlashPermit               ["permit", "v2", seller, marketplace]
   bond_bps                u16        frozen at grant
   reserved                [u8; 32]
 
-DisputeRecord             ["dispute", "v2", marketplace, order_id]
+DisputeRecord             ["dispute", "v2", marketplace, seller, order_id]
   version, bump           u8, u8
   marketplace, seller, buyer   Pubkey
   order_id                [u8; 32]
@@ -370,9 +398,15 @@ not merely against the signature.** A valid signature over a receipt naming a di
 seller must not be usable against this seller.
 
 **Single use** is enforced by the `DisputeRecord` PDA at
-`["dispute", "v2", marketplace, order_id]` rather than by a counter. A counter would
+`["dispute", "v2", marketplace, seller, order_id]` rather than by a counter. A counter would
 serialise receipt issuance, which decision 5 exists to avoid; the order ID is the natural
-per-receipt nonce, and the record's existence is what makes reuse impossible.
+per-receipt nonce, and the record's existence is what makes reuse impossible. The seller is
+part of the seed, not just the marketplace, because a receipt binds `(marketplace, seller,
+buyer, order)`: without the seller, two sellers on one marketplace choosing the same order ID
+collide on one `DisputeRecord` address, and the second buyer's genuine complaint is refused
+until the first record's replay window has passed -- which, since both windows are measured
+from the same protocol-wide `MAX_COMPLAINT_WINDOW_SECONDS`, tends to be exactly the moment the
+second receipt has also aged out.
 
 **The signature supplements the transaction's own authority check, it does not replace it.**
 The buyer signs the transaction and the receipt names that same buyer, so both must agree.
@@ -494,8 +528,8 @@ order:
    **accepted, not rejected**, and pays out whatever remains at resolution. Rejecting it
    would leave 39 of 40 scammed buyers unrecorded and make the seller's public loss count
    understate the fraud precisely when the fraud is worst.
-9. `DisputeRecord` inits at `["dispute", "v2", marketplace, order_id]`. Init failure is
-   the replay guard.
+9. `DisputeRecord` inits at `["dispute", "v2", marketplace, seller, order_id]`. Init failure
+   is the replay guard.
 10. The buyer transfers the bond, rounded up, into `bond_vault`; the amount actually
     deposited is recorded on the dispute. Then `permit.open_disputes += 1`,
     `stake.disputes_total += 1` and `marketplace.disputes_total += 1`.

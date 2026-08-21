@@ -324,13 +324,19 @@ fn test_introspection_rejects_forged_sysvar() {
         )
         .expect("plant the forged sysvar account");
 
-    let result = world.send_raise_dispute(&[raise_instruction], &buyer, market.pubkey, forged_receipt.order_id);
+    let result = world.send_raise_dispute(
+        &[raise_instruction],
+        &buyer,
+        market.pubkey,
+        seller.pubkey(),
+        forged_receipt.order_id,
+    );
     assert_error_code(&result, u32::from(TrustStakeError::InvalidInstructionsSysvar));
 
     assert!(
         world
             .svm
-            .get_account(&world.dispute_pda(&market.pubkey, &forged_receipt.order_id))
+            .get_account(&world.dispute_pda(&market.pubkey, &seller.pubkey(), &forged_receipt.order_id))
             .is_none(),
         "no dispute record may exist after the forged sysvar is rejected"
     );
@@ -410,6 +416,7 @@ fn test_introspection_rejects_crossed_indices() {
         &[crossed_verify.clone(), raise_instruction, decoy_instruction.clone()],
         &buyer,
         market.pubkey,
+        seller.pubkey(),
         forged_receipt.order_id,
     );
     assert_error_code(&result, u32::from(TrustStakeError::MalformedEd25519Instruction));
@@ -455,6 +462,7 @@ fn test_introspection_rejects_missing_ed25519() {
         &[fixture_noop_instruction(Vec::new()), raise_instruction],
         &buyer,
         market.pubkey,
+        seller.pubkey(),
         order,
     );
     assert_error_code(&result, u32::from(TrustStakeError::MissingEd25519Instruction));
@@ -488,7 +496,13 @@ fn test_introspection_rejects_wrong_program() {
         usdc(80),
     );
 
-    let result = world.send_raise_dispute(&[impostor, raise_instruction], &buyer, market.pubkey, receipt.order_id);
+    let result = world.send_raise_dispute(
+        &[impostor, raise_instruction],
+        &buyer,
+        market.pubkey,
+        seller.pubkey(),
+        receipt.order_id,
+    );
     assert_error_code(&result, u32::from(TrustStakeError::MissingEd25519Instruction));
 }
 
@@ -551,6 +565,7 @@ fn test_introspection_rejects_different_message() {
         &[crossed_message_verify, raise_instruction, decoy_instruction],
         &buyer,
         market.pubkey,
+        seller.pubkey(),
         unsigned_receipt.order_id,
     );
     assert_error_code(&result, u32::from(TrustStakeError::MalformedEd25519Instruction));
@@ -624,6 +639,7 @@ fn test_introspection_accepts_self_referential_indices() {
             &[self_indexed_verify, raise_instruction],
             &buyer,
             market.pubkey,
+            seller.pubkey(),
             receipt.order_id,
         )
         .expect("indices naming the Ed25519 instruction's own position are accepted");
@@ -691,6 +707,7 @@ fn test_introspection_rejects_multiple_signatures() {
         &[verify_instruction, raise_instruction],
         &buyer,
         market.pubkey,
+        seller.pubkey(),
         receipt.order_id,
     );
     assert_error_code(&result, u32::from(TrustStakeError::MalformedEd25519Instruction));
@@ -726,6 +743,7 @@ fn test_introspection_rejects_unexpected_index() {
         &[verify_instruction, fixture_noop_instruction(Vec::new()), raise_instruction],
         &buyer,
         market.pubkey,
+        seller.pubkey(),
         receipt.order_id,
     );
     assert_error_code(&result, u32::from(TrustStakeError::MissingEd25519Instruction));
@@ -785,6 +803,7 @@ fn test_introspection_rejects_out_of_bounds_offsets() {
         &[out_of_bounds_verify, raise_instruction],
         &buyer,
         market.pubkey,
+        seller.pubkey(),
         receipt.order_id,
     );
     assert_precompile_error(&result, PrecompileError::InvalidDataOffsets);
@@ -840,6 +859,7 @@ fn test_introspection_rejects_wrong_message_length() {
             &[verify_instruction, raise_instruction],
             &buyer,
             market.pubkey,
+            seller.pubkey(),
             receipt.order_id,
         );
         assert_error_code(&result, u32::from(TrustStakeError::MalformedEd25519Instruction));
@@ -891,6 +911,7 @@ fn test_introspection_rejects_cpi_wrapper() {
         &[verify_instruction, wrapper_instruction],
         &buyer,
         market.pubkey,
+        seller.pubkey(),
         receipt.order_id,
     );
     assert_error_code(&result, u32::from(TrustStakeError::MustBeTopLevelInstruction));
@@ -934,6 +955,7 @@ fn test_introspection_rejects_missing_domain_tag() {
         &[verify_instruction, raise_instruction],
         &buyer,
         market.pubkey,
+        seller.pubkey(),
         receipt.order_id,
     );
     assert_error_code(&result, u32::from(TrustStakeError::MalformedEd25519Instruction));
@@ -982,7 +1004,7 @@ fn test_raise_dispute_succeeds() {
         )
         .expect("raise_dispute succeeds");
 
-    let dispute = world.read_dispute(&world.dispute_pda(&market.pubkey, &receipt.order_id));
+    let dispute = world.read_dispute(&world.dispute_pda(&market.pubkey, &seller.pubkey(), &receipt.order_id));
     assert_eq!(dispute.version, 1);
     assert_eq!(dispute.marketplace, market.pubkey);
     assert_eq!(dispute.seller, seller.pubkey());
@@ -1045,7 +1067,7 @@ fn test_dispute_requires_receipt() {
         usdc(80),
     );
 
-    let result = world.send_raise_dispute(&[raise_instruction], &buyer, market.pubkey, order);
+    let result = world.send_raise_dispute(&[raise_instruction], &buyer, market.pubkey, seller.pubkey(), order);
     assert_error_code(&result, u32::from(TrustStakeError::MissingEd25519Instruction));
 }
 
@@ -1114,6 +1136,7 @@ fn test_dispute_rejects_tampered_amount() {
         &[verify_instruction, raise_instruction],
         &buyer,
         market.pubkey,
+        seller.pubkey(),
         receipt.order_id,
     );
     assert_precompile_error(&result, PrecompileError::InvalidSignature);
@@ -1515,6 +1538,61 @@ fn test_dispute_replay_blocked() {
 }
 
 #[test]
+fn test_dispute_seed_includes_seller() {
+    // Regression for a collision the dispute PDA's old seed allowed: two
+    // sellers on the same marketplace filing under the same order_id --
+    // the natural outcome of per-seller order numbering, which nothing in
+    // the protocol forbids -- used to share one DisputeRecord address.
+    // Without the seller in the seed, the first buyer to file freezes
+    // that address and the second buyer's genuine, unrelated complaint is
+    // refused, permanently: the address only frees at
+    // `issued_at + MAX_COMPLAINT_WINDOW_SECONDS`, while filing requires
+    // `now < issued_at + complaint_window`, so by the time the address is
+    // free every receipt that could have used it is already out of
+    // window. Both complaints here must succeed.
+    let mut world = setup_world();
+    let market = setup_marketplace(&mut world, 70, MIN_COMPLAINT_WINDOW_SECONDS, DEFAULT_BOND_BPS);
+
+    let (first_seller, _first_seller_token_account) = setup_staked_seller(&mut world, usdc(300));
+    world
+        .grant_permit(&first_seller, market.pubkey, usdc(150))
+        .expect("grant_permit succeeds for the first seller");
+    let (second_seller, _second_seller_token_account) = setup_staked_seller(&mut world, usdc(300));
+    world
+        .grant_permit(&second_seller, market.pubkey, usdc(150))
+        .expect("grant_permit succeeds for the second seller");
+
+    let (first_buyer, first_buyer_token_account) = setup_buyer(&mut world, usdc(100));
+    let (second_buyer, second_buyer_token_account) = setup_buyer(&mut world, usdc(100));
+
+    let shared_order = order_id(0x70);
+    let first_receipt = receipt_for(&world, &market, &first_seller, &first_buyer, shared_order, usdc(80));
+    let second_receipt = receipt_for(&world, &market, &second_seller, &second_buyer, shared_order, usdc(80));
+
+    world
+        .raise_dispute(
+            &first_buyer,
+            first_buyer_token_account,
+            market.pubkey,
+            &first_receipt,
+            &market.receipt_signer,
+            usdc(80),
+        )
+        .expect("the first seller's complaint succeeds");
+
+    world
+        .raise_dispute(
+            &second_buyer,
+            second_buyer_token_account,
+            market.pubkey,
+            &second_receipt,
+            &market.receipt_signer,
+            usdc(80),
+        )
+        .expect("a different seller's complaint against the same order_id must not collide with the first");
+}
+
+#[test]
 fn test_dispute_replay_blocked_after_close() {
     // The test that proves deleting records is safe. Once the record is
     // gone the address is free again, and the only thing left stopping
@@ -1560,7 +1638,7 @@ fn test_dispute_replay_blocked_after_close() {
         .expect("close_dispute succeeds once the receipt has aged out");
     assert!(world
         .svm
-        .get_account(&world.dispute_pda(&market.pubkey, &receipt.order_id))
+        .get_account(&world.dispute_pda(&market.pubkey, &seller.pubkey(), &receipt.order_id))
         .is_none());
 
     world.svm.expire_blockhash();
@@ -1743,7 +1821,7 @@ fn test_dispute_underpaid_bond_rejected() {
     assert_error_code(&result, TokenError::InsufficientFunds as u32);
     assert!(world
         .svm
-        .get_account(&world.dispute_pda(&market.pubkey, &receipt.order_id))
+        .get_account(&world.dispute_pda(&market.pubkey, &seller.pubkey(), &receipt.order_id))
         .is_none());
 
     // With the last cent, the same filing goes through and the buyer's
@@ -1916,7 +1994,7 @@ fn test_resolve_dispute_upheld_pays_buyer() {
     assert_eq!(marketplace.disputes_abandoned, 0);
     assert_eq!(marketplace.total_slashed, usdc(80));
 
-    let dispute = world.read_dispute(&world.dispute_pda(&market.pubkey, &receipt.order_id));
+    let dispute = world.read_dispute(&world.dispute_pda(&market.pubkey, &seller.pubkey(), &receipt.order_id));
     assert_eq!(dispute.status, DisputeStatus::Upheld as u8);
 }
 
@@ -1968,7 +2046,7 @@ fn test_resolve_dispute_rejected_pays_seller() {
     assert_eq!(marketplace.disputes_upheld, 0);
     assert_eq!(marketplace.total_slashed, 0);
 
-    let dispute = world.read_dispute(&world.dispute_pda(&market.pubkey, &receipt.order_id));
+    let dispute = world.read_dispute(&world.dispute_pda(&market.pubkey, &seller.pubkey(), &receipt.order_id));
     assert_eq!(dispute.status, DisputeStatus::Rejected as u8);
 }
 
@@ -2006,7 +2084,7 @@ fn test_marketplace_cannot_exceed_permit() {
         )
         .expect("an over-cap claim is recorded, not rejected");
 
-    let dispute = world.read_dispute(&world.dispute_pda(&market.pubkey, &receipt.order_id));
+    let dispute = world.read_dispute(&world.dispute_pda(&market.pubkey, &seller.pubkey(), &receipt.order_id));
     assert_eq!(dispute.claim, usdc(80));
 
     world
@@ -2106,7 +2184,7 @@ fn test_marketplace_cannot_resolve_foreign_dispute() {
     );
     assert_error_code(&result, u32::from(anchor_lang::error::ErrorCode::ConstraintHasOne));
 
-    let dispute = world.read_dispute(&world.dispute_pda(&first.pubkey, &receipt.order_id));
+    let dispute = world.read_dispute(&world.dispute_pda(&first.pubkey, &seller.pubkey(), &receipt.order_id));
     assert_eq!(dispute.status, DisputeStatus::Open as u8);
 }
 
@@ -2264,7 +2342,7 @@ fn test_bond_uses_recorded_amount() {
         .unwrap();
     assert_eq!(
         world
-            .read_dispute(&world.dispute_pda(&market.pubkey, &receipt.order_id))
+            .read_dispute(&world.dispute_pda(&market.pubkey, &seller.pubkey(), &receipt.order_id))
             .bond,
         usdc(8)
     );
@@ -2493,7 +2571,7 @@ fn test_marketplace_cannot_freeze_seller_forever() {
     let stake_before_release = world.read_seller_stake(&world.stake_pda(&seller.pubkey()));
     assert_eq!(stake_before_release.disputes_total, 1);
     assert_eq!(stake_before_release.disputes_lost, 0);
-    let dispute = world.read_dispute(&world.dispute_pda(&market.pubkey, &receipt.order_id));
+    let dispute = world.read_dispute(&world.dispute_pda(&market.pubkey, &seller.pubkey(), &receipt.order_id));
     assert_eq!(dispute.status, DisputeStatus::Abandoned as u8);
 
     // And now the seller gets out. (A fresh blockhash: this transaction
@@ -2629,7 +2707,7 @@ fn resolve_dispute_with_marketplace(
         truststake::accounts::ResolveDisputeAccountConstraints {
             arbiter: arbiter.pubkey(),
             marketplace,
-            dispute: world.dispute_pda(&dispute_marketplace, &order),
+            dispute: world.dispute_pda(&dispute_marketplace, &seller, &order),
             permit: world.permit_pda(&seller, &dispute_marketplace),
             stake: world.stake_pda(&seller),
             stake_vault: world.stake_vault_pda(&seller),
@@ -2711,6 +2789,7 @@ fn test_substituted_marketplace_rejected() {
         ],
         &buyer,
         forged_address,
+        seller.pubkey(),
         receipt.order_id,
     );
     assert_error_code(&result, u32::from(anchor_lang::error::ErrorCode::AccountNotInitialized));
@@ -3035,7 +3114,7 @@ fn test_bond_rounding_small_claims() {
         )
         .expect("a one-cent claim files");
 
-    let dispute = world.read_dispute(&world.dispute_pda(&market.pubkey, &receipt.order_id));
+    let dispute = world.read_dispute(&world.dispute_pda(&market.pubkey, &seller.pubkey(), &receipt.order_id));
     assert_eq!(dispute.bond, 1, "the bond rounds up, never down to zero");
     assert_eq!(world.token_balance(&buyer_token_account), balance_before - 1);
     assert_eq!(world.token_balance(&world.bond_vault_pda(&market.pubkey)), 1);
@@ -3069,7 +3148,7 @@ fn test_max_value_arithmetic() {
         )
         .expect("a claim at u64::MAX files");
 
-    let dispute = world.read_dispute(&world.dispute_pda(&market.pubkey, &receipt.order_id));
+    let dispute = world.read_dispute(&world.dispute_pda(&market.pubkey, &seller.pubkey(), &receipt.order_id));
     assert_eq!(dispute.claim, u64::MAX);
     assert_eq!(dispute.bond, 0);
 
@@ -3115,7 +3194,7 @@ fn test_rent_refund_on_close() {
         .resolve_dispute(&market.arbiter, market.pubkey, receipt.order_id, buyer_token_account, true)
         .unwrap();
 
-    let dispute_pubkey = world.dispute_pda(&market.pubkey, &receipt.order_id);
+    let dispute_pubkey = world.dispute_pda(&market.pubkey, &seller.pubkey(), &receipt.order_id);
 
     // Closing before the receipt has aged out is refused: the record is
     // still the replay guard until then.
@@ -3202,6 +3281,7 @@ fn test_raise_dispute_transaction_size() {
             &[verify_instruction, raise_instruction],
             &buyer,
             market.pubkey,
+            seller.pubkey(),
             receipt.order_id,
         )
         .expect("the measured transaction is a working one");

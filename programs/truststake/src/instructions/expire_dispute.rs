@@ -27,7 +27,7 @@ pub struct ExpireDisputeAccountConstraints<'info> {
 
     #[account(
         mut,
-        seeds = [DISPUTE_SEED, SEED_VERSION, dispute.marketplace.as_ref(), dispute.order_id.as_ref()],
+        seeds = [DISPUTE_SEED, SEED_VERSION, dispute.marketplace.as_ref(), dispute.seller.as_ref(), dispute.order_id.as_ref()],
         bump = dispute.bump,
         has_one = marketplace,
     )]
