@@ -47,7 +47,7 @@ of this document's deliverable.
 | 4 | **Disputes require a marketplace-signed order receipt.** | Gives the program a reason to believe a purchase happened, caps the claim at the real order amount, and makes a stranger unable to touch a seller's collateral. It also bounds spam far better than any bond does: filing 100 complaints requires 100 real purchases. |
 | 5 | **Receipts live offchain, verified onchain only when disputed**, via the Ed25519 precompile plus instruction introspection. | Zero cost and zero transactions per normal order. A marketplace integrates by signing a struct in its own backend: no wallet, no SOL, no transaction pipeline. Integration cost is what kills infrastructure products. It also lets a buyer file without the marketplace's cooperation, which is what makes an abandoned complaint publicly visible (decision 7). |
 | 6 | **USDC collateral, with the mint pinned by address in `Config`.** Token code is written against `anchor_spl::token_interface` and uses `transfer_checked`, so it runs unchanged against either token program. | Decision 4 introduced fiat-denominated claims; mixing those with SOL collateral forces a price oracle. The risk to close is a mint carrying a transfer fee, which would make the recorded `staked` disagree with the vault's real balance. Pinning one mint by address closes that completely, since one address is one fee policy, and it is stronger than pinning the token program while leaving the door open to a Token Extensions stablecoin later. |
-| 7 | **Complaints are scoped to the permit, and expire.** An open complaint freezes only the collateral committed to that one marketplace. Undecided after 30 days, anyone may expire it: nobody is paid, the bond returns in full, the freeze lifts, and the **marketplace** takes a permanent public mark. | All three audit reviewers found the previous version independently. A global open-complaint counter meant the smallest, most forgotten marketplace a seller ever signed up with could freeze their entire collateral forever, for the price of one filing. Expiry closes the liveness hole that appears with no attacker at all: a marketplace that shuts down, loses a key, or ignores its queue. Expiring in the buyer's favour was rejected because it hands every genuine buyer a free option to keep the goods and reclaim the money whenever a marketplace is slow. |
+| 7 | **Complaints are scoped to the permit, and expire.** An open complaint freezes only the collateral committed to that one marketplace. Once raised, a complaint undecided after 30 days may be expired by anyone: nobody is paid, the bond returns in full, the freeze lifts, and the **marketplace** takes a permanent public mark. That 30-day clock starts at filing, not at the order, and a complaint may be filed as late as the end of the complaint window, so a seller's real worst case, from order to a guaranteed-lifted freeze, is the complaint window plus 30 days, up to 60. | All three audit reviewers found the previous version independently. A global open-complaint counter meant the smallest, most forgotten marketplace a seller ever signed up with could freeze their entire collateral forever, for the price of one filing. Expiry closes the liveness hole that appears with no attacker at all: a marketplace that shuts down, loses a key, or ignores its queue. Expiring in the buyer's favour was rejected because it hands every genuine buyer a free option to keep the goods and reclaim the money whenever a marketplace is slow. |
 | 8 | **Two-speed exit, and no withdrawal cooldown.** Collateral above `committed` withdraws immediately. Committed collateral frees only by revoking a permit and waiting out that permit's complaint window, with a cooperative fast path. | Collateral above `committed` is claimable by nobody, so holding it protects no one. Committed collateral is exactly what backs outstanding orders, and releasing it before the complaint window closes is a clean exit scam requiring no race. Splitting the two makes the separate cooldown redundant: revocation plus one complaint window is the only timer the system needs. |
 | 9 | **Buyer posts a refundable bond** (default 10%, marketplace-set, protocol ceiling 20%). Upheld returns it with the payout; rejected forfeits it to the seller. Complaint records are deleted and their rent refunded once the receipt is too old to reuse. | The bond's real job is narrow and worth having: it stops a buyer who received the goods from filing anyway on the chance of a refund. The rent refund matters more than it sounds. Permanent records made filing cost roughly $0.35 on top of the bond, which on a $20 order is most of a 12% haircut just to raise a hand, and small orders are the entire target market. A receipt cannot be reused once its complaint window has passed, so the record has no job left after that and can go. |
 | 10 | **A permit's money terms are frozen when the seller signs it; the marketplace's keys stay live.** Cap, complaint window and bond rate are copied onto the permit and never change. The receipt signer and arbiter are read live from the marketplace account. | Freezing the money terms stops a marketplace rewriting the deal after the fact, for example stretching the complaint window to trap a departing seller. Freezing the *keys* would break ordinary operations: a staff change would strand every pending complaint and force every seller to re-sign. Under decision 2 the marketplace can already sign any receipt and rule any way it likes, so changing which key does that grants it nothing new. |
@@ -114,6 +114,33 @@ Each of these is a decision with a reason, not an oversight.
   `close_stake`, so roughly half a cent stays locked in the stake account and its vault after
   the last token is withdrawn. Adding a handler to reclaim it is a few lines and is deferred
   rather than overlooked: it is worth less than the transaction fee to call it.
+- **A rotated receipt-signer key is remembered once, not as a ring.**
+  `Marketplace.prev_receipt_signer` holds only the key rotated away from, so a marketplace
+  that rotates twice inside one complaint window overwrites it, and a receipt genuinely
+  signed by the *first* key becomes unfileable even though its window has not closed. Not
+  fixed, on purpose: the obvious fix, refusing a second rotation until the window elapses,
+  would block exactly the emergency this mechanism exists for, a marketplace discovering
+  mid-incident that its replacement key is also compromised, forced to leave a
+  known-compromised signer live rather than rotate again. If this is ever revisited, the
+  right fix is a small ring of previous keys with their own timestamps, not a cooldown on
+  rotation.
+- **A frozen buyer token account can stall `expire_dispute`.** The bond can only return to
+  `buyer_token_account`, so a buyer whose token account is frozen blocks the one handler
+  that exists specifically to free a seller when a marketplace never decides. Judged low:
+  `buyer_token_account` is bound only to `token::authority = dispute.buyer`, not to the
+  buyer's associated token account, and `expire_dispute` is permissionless, so whoever calls
+  it may supply any token account the buyer owns, including a fresh one created for the
+  purpose. Only a mint that makes new accounts frozen by default defeats this.
+- **`bond_bps` may legally be zero.** `validate_marketplace_settings` bounds only the
+  ceiling; no protocol floor is imposed. The risk is not only that a marketplace can harm
+  its own sellers this way: with a zero bond a buyer holding one genuine receipt files for
+  free, and every filing increments `permit.open_disputes`, which `release_permit` requires
+  to reach zero before a seller can exit. Enough zero-cost complaints, each needing to be
+  individually resolved or expired, traps a seller who wants out. It is left legal because
+  `bond_bps` is frozen onto the permit at grant time, so a seller reads the rate and can
+  decline before taking on any risk, and because a marketplace already holds a larger lever
+  in its own arbiter. The mitigation belongs in whatever interface shows a seller the terms
+  before they grant a permit.
 
 ---
 
@@ -187,8 +214,16 @@ against its own stored ID, so a permit or dispute PDA can never be derived from 
 account the caller substituted.
 
 **Conservation is asserted in the program, not only in tests.** Every handler that moves
-tokens reloads the vault afterwards and requires `stake_vault.amount == stake.staked`. It is
-one line and it catches an entire class of drain bug at runtime rather than at review time.
+tokens reloads the vault afterwards and requires `stake_vault.amount >= stake.staked`, not
+exact equality: a token account accepts a transfer from anyone without its owner's consent,
+and no handler recomputes `staked` from the vault, so exact equality let a stranger brick a
+seller permanently by donating one minor unit into their vault -- every later handler that
+moves tokens would then find the vault disagreeing with the ledger and refuse to run, with no
+instruction able to fix it. `>=` still catches the dangerous direction, a vault caught *short*
+of the ledger, which is what a drain (or, before it is rejected at registration, a
+transfer-fee mint) looks like; a surplus is inert, since every payout is sized from the ledger
+fields alone (`stake.staked`, `dispute.claim`, `dispute.bond`, ...) and never from
+`stake_vault.amount`.
 
 **Config validation is one named function.** `validate_marketplace_settings` checks the
 window is inside 2 to 30 days and `bond_bps` is at or below 2,000, called from both

@@ -13,8 +13,8 @@ slice as it lands.
 ## Running the suite
 
 ```bash
-cd programs/truststake && cargo test          # unit and integration, LiteSVM, in-process
 anchor build                                  # SBF target; plain cargo build will not work
+cd programs/truststake && cargo test          # unit and integration, LiteSVM, in-process
 cargo run --example devnet_demo               # real devnet signatures, costs SOL
 ```
 
@@ -22,18 +22,51 @@ Tests run against LiteSVM with the `precompiles` feature enabled, which is what 
 Ed25519 signature verification to execute in-process. If that feature is off, every dispute
 test silently has nowhere to run.
 
-**Run `anchor build` before `cargo test`, every time.** The tests load the compiled program
-through `include_bytes!`, so the binary is baked in when the test compiles. A stale `.so`
-means the suite passes against the previous version of the program while you read the new
-one. This bites hardest exactly here, because every phase changes the program. If a suite
-passes suspiciously fast or a change appears to have no effect, rebuild before debugging
-anything else.
+**`cargo test` cannot silently run against a stale program.** The tests load the compiled
+program through `include_bytes!` in `tests/common/mod.rs`, so the `.so` is baked into the
+test binary at compile time; `include_bytes!` only fails if the file is absent, and `cargo
+test` has no idea that `programs/truststake/src/` is what produces it, since the two go
+through entirely different toolchains. `programs/truststake/build.rs` closes that gap: it
+runs before any of this crate compiles, compares `target/deploy/{truststake,cpi_wrapper}.so`
+against the newest file in the source that builds each one, and fails the build outright,
+naming `anchor build` as the fix, if a `.so` is missing or older than its source. This is
+exactly the failure mode a branch switch causes, since a different branch's program is
+different source built into the same `target/`, and it used to be caught only by noticing a
+suite pass suspiciously fast.
 
 **Which tests belong to which phase:** a test lands in the phase that builds the last
 instruction handler it calls, not the phase of the attacker it belongs to. So
 `test_seller_cannot_release_permit_with_open_dispute` sits in the seller section below but is
 a Phase 3 test, because it needs `raise_dispute` to exist. A phase is done when every test it
 can run, runs.
+
+## Continuous integration
+
+`.github/workflows/ci.yml` runs `anchor build`, `cargo check --tests` and `cargo clippy
+--tests` on every push and pull request. It does not run `cargo test`, on purpose:
+`initialize_config` accepts only the signer hardcoded as `constants::INITIAL_ADMIN`, and
+every test in this suite depends on that call succeeding first. That key is the real deploy
+wallet's and, per its own doc comment, likely also the program's upgrade authority -- not
+something to put in CI secrets. Beyond the ordinary risk of a CI secret leaking, `cargo
+test`/`cargo check` run `build.rs` from every dependency in the tree with full access to the
+process environment, which is a wider exfiltration surface than "CI secret" usually implies.
+
+What the job still catches without that key: compile errors in the program and in the test
+harness itself (`cargo check --tests` type-checks every file under `tests/`, including
+`tests/common/mod.rs`, without executing anything in it), clippy regressions, and, via
+`programs/truststake/build.rs`, a `target/deploy/*.so` older than the source that built it,
+the same stale-artifact trap a branch switch causes locally. It proves nothing about
+behaviour: run `anchor build && cargo test` locally before merging, same as this file already
+says to.
+
+Making `INITIAL_ADMIN` build-time configurable, so CI could bake a throwaway admin into its
+own build and run the full suite, was considered and declined. It is mechanically possible.
+It was declined because it turns a hardcoded, unconditional guarantee -- only one key can
+ever call `initialize_config` on a given compiled program -- into one whose safety depends on
+a CI workflow never being misconfigured to carry that override into a real deploy build,
+trading a compiler-enforced fact for a process one. That trade is not worth it for coverage
+this job already gets most of the value of: the behaviour a full run would additionally prove
+is exactly what a human runs `cargo test` locally to confirm before merging anyway.
 
 ## Rules the suite follows
 
@@ -284,10 +317,18 @@ anyone to be malicious.
   would truncate to zero. The bond rounds **up**, so assert a nonzero bond, and assert the
   buyer's balance falls by exactly the rounded-up figure. Rounding a payment in the payer's
   favour is the shape of bug that gets industrialised.
-- `test_conservation_asserted_onchain`: force a mismatch between the vault balance and
-  `staked` (by transferring into the vault directly, outside the program) and confirm the
-  next handler that moves tokens fails rather than proceeding on a wrong figure. This tests
-  the runtime assertion, not the test-harness one.
+- `test_conservation_asserted_onchain`: force the vault balance *below* `staked` (written
+  directly into account state, since nothing outside the program can move tokens out of a
+  vault whose authority is the `stake` PDA) and confirm the next handler that moves tokens
+  fails rather than proceeding on a wrong figure. This tests the runtime assertion, not the
+  test-harness one. The check is `>=`, not exact equality, precisely so the opposite
+  mismatch -- an unrelated party donating into the vault, which anyone can always do -- is
+  not a violation; see `test_stake_vault_donation_does_not_brick_the_seller`.
+- `test_stake_vault_donation_does_not_brick_the_seller`: an unrelated third party transfers
+  one minor unit into a seller's vault, directly, outside the program. Confirm the seller can
+  still withdraw, still add stake, and a dispute against them can still be resolved
+  afterwards. A permanent, unrecoverable freeze from a single unsolicited deposit is a denial
+  of service, not a conservation violation.
 - `test_max_value_arithmetic`: `u64::MAX` stake, cap, and claim. Nothing may wrap.
 - `test_rent_refund_on_close`: the rent goes to the buyer, and the account is genuinely
   gone afterwards.
