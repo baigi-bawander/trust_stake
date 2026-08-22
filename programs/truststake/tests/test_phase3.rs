@@ -2147,6 +2147,40 @@ fn test_dispute_underpaid_bond_rejected() {
 }
 
 #[test]
+fn test_raise_dispute_rejects_foreign_token_account() {
+    // add_stake and withdraw_stake each have a
+    // test_*_rejects_foreign_token_account; the bond source here carries
+    // the identical `token::authority = buyer` constraint and had none.
+    let Scenario {
+        mut world,
+        market,
+        seller,
+        buyer,
+        ..
+    } = scenario(63);
+
+    let other_owner = funded_keypair(&mut world);
+    let foreign_token_account = world.create_funded_token_account(world.mint, other_owner.pubkey(), usdc(100));
+    let receipt = receipt_for(&world, &market, &seller, &buyer, order_id(0xF1), usdc(80));
+
+    let result = world.raise_dispute(
+        &buyer,
+        foreign_token_account,
+        market.pubkey,
+        &receipt,
+        &market.receipt_signer,
+        usdc(80),
+    );
+    assert_error_code(&result, u32::from(anchor_lang::error::ErrorCode::ConstraintTokenOwner));
+
+    assert!(world
+        .svm
+        .get_account(&world.dispute_pda(&market.pubkey, &seller.pubkey(), &receipt.order_id))
+        .is_none());
+    assert_eq!(world.token_balance(&foreign_token_account), usdc(100));
+}
+
+#[test]
 fn test_buyer_cannot_resolve() {
     let Scenario {
         mut world,
@@ -3294,6 +3328,48 @@ fn test_expiry_boundary_exact() {
     world
         .expire_dispute(&caller, market.pubkey, receipt.order_id, buyer_token_account)
         .expect("expiry exactly at the deadline succeeds");
+}
+
+#[test]
+fn test_expire_dispute_rejects_substituted_payout_destination() {
+    // resolve_dispute has test_arbiter_cannot_redirect_payout;
+    // expire_dispute pays out of the same dispute.buyer-bound
+    // buyer_token_account and had no equivalent. Every other
+    // expire_dispute test in this file passes the correct account.
+    let Scenario {
+        mut world,
+        market,
+        seller,
+        buyer,
+        buyer_token_account,
+        ..
+    } = scenario(62);
+
+    let receipt = receipt_for(&world, &market, &seller, &buyer, order_id(0xF2), usdc(80));
+    world
+        .raise_dispute(
+            &buyer,
+            buyer_token_account,
+            market.pubkey,
+            &receipt,
+            &market.receipt_signer,
+            usdc(80),
+        )
+        .unwrap();
+
+    world.warp_seconds(DISPUTE_EXPIRY_SECONDS);
+    let caller = funded_keypair(&mut world);
+    let attacker_token_account = world.create_funded_token_account(world.mint, caller.pubkey(), 0);
+
+    let result = world.expire_dispute(&caller, market.pubkey, receipt.order_id, attacker_token_account);
+    assert_error_code(&result, u32::from(anchor_lang::error::ErrorCode::ConstraintTokenOwner));
+    assert_eq!(world.token_balance(&attacker_token_account), 0);
+
+    // The whole transaction failed, so the record is still Open -- the
+    // permit's freeze and the marketplace's abandonment count are
+    // untouched, not just the payout.
+    let dispute = world.dispute_pda(&market.pubkey, &seller.pubkey(), &receipt.order_id);
+    assert_eq!(world.read_dispute(&dispute).status, DisputeStatus::Open as u8);
 }
 
 #[test]

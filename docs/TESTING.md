@@ -400,12 +400,20 @@ These are not pass-or-fail assertions so much as numbers to record and watch, bu
 one has a hard ceiling and needs a real test.
 
 - `test_raise_dispute_transaction_size`: build the full two-instruction transaction and
-  assert it serialises under **1,232 bytes**. Measured at **953** in Phase 3. Transaction
-  size, not compute, is the binding constraint in this program. If it goes over, the fix is
-  Address Lookup Tables, never dropping a check.
-- `test_raise_dispute_compute`: record the consumed compute units. Measured at **42,229**
-  in Phase 3 against a 200,000 default budget. If this comes in near the budget, something is
-  wrong with an assumption rather than with the budget.
+  assert it serialises under **1,232 bytes**. Measured at **953** in Phase 3, re-confirmed
+  unchanged in Phase 4: the account count and the Ed25519 instruction's size are what
+  determine this figure, and neither has moved. Transaction size, not compute, is the
+  binding constraint in this program. If it goes over, the fix is Address Lookup Tables,
+  never dropping a check.
+- `test_raise_dispute_compute`: record the consumed compute units. This is not a fixed
+  number: `dispute` is `init`ed with a bare `bump` rather than a stored one, so Anchor
+  searches for its canonical bump onchain, and one of that PDA's seeds is the seller's
+  freshly generated pubkey, so the number of search attempts (and therefore the compute
+  cost) varies from one buyer/seller pair to the next. Phase 3 recorded a single run at
+  42,229 CU as if it were a constant; repeated Phase 4 runs against the same build ranged
+  from 42,318 to 51,318 CU. Either figure sits far below the 200,000 default budget. If a
+  run comes in near the budget, something is wrong with an assumption rather than with the
+  budget.
 - `test_raise_dispute_stack_frame`: the account struct must not blow the 4KB stack frame.
   Box the cold-path accounts. This shows up as a build warning rather than a test failure,
   so check for it explicitly.

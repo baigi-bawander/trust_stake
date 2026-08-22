@@ -779,6 +779,98 @@ fn test_release_permit_early_requires_both_signatures() {
     assert!(world.svm.get_account(&permit_pubkey).is_some());
 }
 
+#[test]
+fn test_release_permit_early_rejects_cross_marketplace_permit() {
+    // test_release_permit_early_requires_both_signatures only tries an
+    // authority keypair tied to no registered marketplace at all, which
+    // exercises marketplace's own `has_one = authority`. This is the
+    // other half: two fully registered marketplaces, M1 and M2, with the
+    // same seller holding a permit at each. M2's genuine authority signs
+    // honestly, but `permit` points at the seller's M1 permit instead of
+    // an M2 one -- exercising permit's `has_one = marketplace`, not
+    // marketplace's own `has_one = authority` (which passes cleanly,
+    // since marketplace and authority genuinely match).
+    let mut world = setup_world();
+    let (seller, _token_account) = setup_staked_seller(&mut world, usdc(300), 0);
+    let (_authority_one, marketplace_one) =
+        setup_marketplace(&mut world, 30, MIN_COMPLAINT_WINDOW_SECONDS, DEFAULT_BOND_BPS);
+    let (authority_two, marketplace_two) =
+        setup_marketplace(&mut world, 31, MIN_COMPLAINT_WINDOW_SECONDS, DEFAULT_BOND_BPS);
+
+    world.grant_permit(&seller, marketplace_one, usdc(100)).unwrap();
+    world.grant_permit(&seller, marketplace_two, usdc(50)).unwrap();
+    world.revoke_permit(&seller, marketplace_one).unwrap();
+
+    let permit_at_marketplace_one = world.permit_pda(&seller.pubkey(), &marketplace_one);
+    let stake = world.stake_pda(&seller.pubkey());
+    let (event_authority, program) = event_cpi_accounts(&world.program_id);
+    let instruction = Instruction::new_with_bytes(
+        world.program_id,
+        &truststake::instruction::ReleasePermitEarly {}.data(),
+        truststake::accounts::ReleasePermitEarlyAccountConstraints {
+            seller: seller.pubkey(),
+            authority: authority_two.pubkey(),
+            marketplace: marketplace_two,
+            permit: permit_at_marketplace_one,
+            stake,
+            event_authority,
+            program,
+        }
+        .to_account_metas(None),
+    );
+    let result = world.send_instructions(&[instruction], &seller.pubkey(), &[&seller, &authority_two]);
+    assert_error_code(&result, u32::from(anchor_lang::error::ErrorCode::ConstraintHasOne));
+
+    // Both permits are still committed for exactly what they were granted.
+    assert_eq!(world.read_seller_stake(&stake).committed, usdc(150));
+}
+
+#[test]
+fn test_release_permit_rejects_wrong_seller_substitution() {
+    // The obvious version of this attack -- an impostor with no
+    // SellerStake of their own -- returns AccountNotInitialized on
+    // `stake`, which proves only that the impostor's setup was
+    // incomplete, not that has_one blocked anything: Anchor loads
+    // account fields in declaration order, and `stake` failing to load
+    // preempts `permit`'s constraint from ever running. Give the
+    // impostor a real, initialized SellerStake of their own, so
+    // `permit.seller` is the only thing left distinguishing the attack.
+    let mut world = setup_world();
+    let (seller, _token_account) = setup_staked_seller(&mut world, usdc(300), 0);
+    let (_authority, marketplace) = setup_marketplace(&mut world, 32, MIN_COMPLAINT_WINDOW_SECONDS, DEFAULT_BOND_BPS);
+    world.grant_permit(&seller, marketplace, usdc(150)).unwrap();
+    world.revoke_permit(&seller, marketplace).unwrap();
+    world.warp_seconds(MIN_COMPLAINT_WINDOW_SECONDS + 1);
+
+    let impostor = funded_keypair(&mut world);
+    world.initialize_stake(&impostor).expect("initialize_stake succeeds");
+
+    let permit = world.permit_pda(&seller.pubkey(), &marketplace);
+    let impostor_stake = world.stake_pda(&impostor.pubkey());
+    let (event_authority, program) = event_cpi_accounts(&world.program_id);
+    let instruction = Instruction::new_with_bytes(
+        world.program_id,
+        &truststake::instruction::ReleasePermit {}.data(),
+        truststake::accounts::ReleasePermitAccountConstraints {
+            caller: impostor.pubkey(),
+            seller: impostor.pubkey(),
+            permit,
+            stake: impostor_stake,
+            event_authority,
+            program,
+        }
+        .to_account_metas(None),
+    );
+    let result = world.send_instructions(&[instruction], &impostor.pubkey(), &[&impostor]);
+    assert_error_code(&result, u32::from(anchor_lang::error::ErrorCode::ConstraintHasOne));
+
+    // Neither seller's committed moved: the real seller's permit is still
+    // sitting there untouched, and the impostor never had any collateral
+    // committed to begin with.
+    assert_eq!(world.read_seller_stake(&world.stake_pda(&seller.pubkey())).committed, usdc(150));
+    assert_eq!(world.read_seller_stake(&impostor_stake).committed, 0);
+}
+
 // ---------------------------------------------------------------------
 // Arithmetic hardening
 // ---------------------------------------------------------------------

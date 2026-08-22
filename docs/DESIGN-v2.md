@@ -737,15 +737,20 @@ Then `cargo run --example devnet_demo` for real devnet signatures. The demo walk
 
 ## Risks and open items
 
-- **Transaction size is the ceiling, not compute.** Measured in Phase 3, against the built
-  program rather than estimated: `raise_dispute` consumes **42,229 CU** of a 200,000 default
-  budget, and its transaction serialises to **953 bytes** of the 1,232-byte limit, leaving
-  279 bytes of headroom. Fourteen accounts and a 302-byte Ed25519 instruction carrying the
-  190-byte receipt account for most of it, including the two accounts `#[event_cpi]` adds to
-  every emitting handler, an `event_authority` PDA and the program itself. Adding more than
-  eight accounts, or a second signature, needs Address Lookup Tables rather than a dropped
-  check. `test_raise_dispute_transaction_size` and `test_raise_dispute_compute` keep both
-  figures honest.
+- **Transaction size is the ceiling, not compute.** Measured against the built program rather
+  than estimated: `raise_dispute`'s transaction serialises to **953 bytes** of the
+  1,232-byte limit, leaving 279 bytes of headroom, unchanged since Phase 3. Fourteen
+  accounts and a 302-byte Ed25519 instruction carrying the 190-byte receipt account for most
+  of it, including the two accounts `#[event_cpi]` adds to every emitting handler, an
+  `event_authority` PDA and the program itself. Adding more than eight accounts, or a second
+  signature, needs Address Lookup Tables rather than a dropped check. Compute is not a
+  single figure: `dispute` is `init`ed with a bare `bump`, so Anchor searches for its
+  canonical bump onchain, and one of that PDA's seeds is the seller's freshly generated
+  pubkey, so the number of search attempts varies from one buyer/seller pair to the next.
+  Phase 4 measured a range of 42,318 to 51,318 CU across repeated runs against the same
+  build, comfortably inside the 200,000 default budget throughout.
+  `test_raise_dispute_transaction_size` and `test_raise_dispute_compute` keep both figures
+  honest.
 - **No enumeration query path.** Point lookups by PDA are fast and free forever, but "all
   open complaints for marketplace X" needs `getProgramAccounts` with unindexed `memcmp`,
   which degrades as the program grows and which most RPC providers rate-limit. Anything that

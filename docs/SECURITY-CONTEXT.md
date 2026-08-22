@@ -186,10 +186,12 @@ seller's free balance grows without a deposit.
 | Domain separation | receipt `domain`, `program_id`, `chain_id` | a signature from another context cannot be read as a receipt |
 | Events | 19 `emit_cpi!` events | buyer history is derived from these, so `emit_cpi!` rather than `emit!` |
 
-Coverage as of Phase 3: 114 tests passing with no warnings, every one of the nineteen
-handlers exercised, and every one of the 33 error variants asserted by name somewhere in the
-suite. `raise_dispute` measures 953 bytes of the 1,232-byte transaction limit and 42,229 of
-200,000 compute units.
+Coverage as of Phase 4: 128 tests passing with no warnings, every one of the nineteen
+handlers exercised, and every one of the 35 error variants asserted by name somewhere in the
+suite. `raise_dispute` measures 953 bytes of the 1,232-byte transaction limit. Its compute
+cost is not a single figure: the `dispute` PDA's canonical bump is searched for onchain and
+one of its seeds is the seller's freshly generated pubkey, so measured runs against the same
+build range from 42,318 to 51,318 of 200,000 compute units.
 
 ## Where to look hardest
 
