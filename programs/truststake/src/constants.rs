@@ -64,4 +64,14 @@ pub const DISPUTE_EXPIRY_SECONDS: i64 = 30 * SECONDS_PER_DAY;
 /// closes off a receipt dated years ahead, which would otherwise push
 /// `closable_after` out by the same margin and leave the record's rent
 /// stuck for as long.
+///
+/// Also reused, unmodified, as `release_permit_early`'s minimum wait
+/// after revocation (see that handler's doc comment for the full
+/// argument). That reuse is load-bearing: `raise_dispute` check 7 accepts
+/// a receipt down to `granted_at - CLOCK_SKEW_TOLERANCE_SECONDS`, and the
+/// early-release wait is only a safe substitute for the complaint window
+/// because it is bounded by this SAME value. Widening this constant
+/// widens both sides together; introducing a second constant for either
+/// side would let them drift apart and reopen the cross-era replay this
+/// pairing closes.
 pub const CLOCK_SKEW_TOLERANCE_SECONDS: i64 = 60 * 60;

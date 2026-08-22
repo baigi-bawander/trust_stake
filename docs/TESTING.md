@@ -186,8 +186,21 @@ seller they never dealt with.
   released early with `open_disputes == 0` (the era was never disputed), and re-granted at
   the same address with a different cap. A receipt from the old era, held rather than
   filed, still cannot be used against the new one, even though nothing about the old era
-  was ever in dispute. Needs no window games: `release_permit_early` skips the wait
-  entirely, so the whole cycle can land inside the receipt's original window.
+  was ever in dispute. Needs no complaint-window games: `release_permit_early` skips only
+  that wait, so the whole cycle can land inside the receipt's original window; the receipt
+  here is deliberately made stale by 6 hours, well past `CLOCK_SKEW_TOLERANCE_SECONDS`, so
+  the test still exercises check 7's era bound rather than the minimum-wait guard below.
+- `test_release_permit_early_enforces_clock_skew_wait`: boundary test for the minimum wait
+  itself. One second before `revoked_at + CLOCK_SKEW_TOLERANCE_SECONDS`, `release_permit_early`
+  fails with `EarlyReleaseWaitNotElapsed`; exactly at the boundary it succeeds.
+- `test_dispute_rejects_cross_era_receipt_after_fast_early_release`: the fast-path replay
+  this wait exists to close. A genuine, never-disputed era-1 receipt is issued, then the
+  seller revokes, waits out exactly `CLOCK_SKEW_TOLERANCE_SECONDS`, releases early, and the
+  marketplace re-grants -- realistic non-zero gaps throughout, not a same-instant probe.
+  Filing the stale receipt against the fresh permit fails with `ReceiptIssuedBeforeGrant`,
+  and era 2's collateral is untouched. Before the minimum-wait guard existed, the identical
+  scenario with a fast (under-an-hour) revoke-release-regrant cycle let the receipt file
+  and get upheld, slashing collateral that had nothing to do with the closed-out era.
 - `test_dispute_rejects_stale_era_receipt_release_permit_widened_window`: the other
   reachable path to the same replay. Ordinary `release_permit` already consumes the
   receipt's original window by the time its own wait elapses, so this one needs the

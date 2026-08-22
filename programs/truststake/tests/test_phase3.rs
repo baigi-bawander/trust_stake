@@ -1809,14 +1809,17 @@ fn test_dispute_rejects_receipt_issued_after_revocation() {
 
 #[test]
 fn test_dispute_rejects_stale_era_receipt_release_permit_early() {
-    // Needs no window-widening: release_permit_early skips the wait
-    // entirely, so revoke -> release -> re-grant -> raise_dispute can all
-    // land inside the receipt's ORIGINAL window. The 6-hour gap below is
+    // Needs no complaint-window widening: release_permit_early skips that
+    // wait (though it still enforces the CLOCK_SKEW_TOLERANCE_SECONDS
+    // minimum), so revoke -> release -> re-grant -> raise_dispute can land
+    // well inside the receipt's ORIGINAL window. The 6-hour gap below is
     // deliberate: it is comfortably past CLOCK_SKEW_TOLERANCE_SECONDS (1
     // hour), so this exercises a genuinely stale receipt rather than one
     // that merely lands inside the fix's clock-skew allowance, and it is
     // comfortably inside the 2-day complaint window, so the window check
-    // is not what is under test here.
+    // is not what is under test here. The extra warp before
+    // release_permit_early satisfies its own mandatory wait without
+    // affecting any of that.
     let Scenario {
         mut world,
         market,
@@ -1834,6 +1837,7 @@ fn test_dispute_rejects_stale_era_receipt_release_permit_early() {
     world.warp_seconds(6 * 3_600);
 
     world.revoke_permit(&seller, market.pubkey).expect("revoke_permit succeeds");
+    world.warp_seconds(CLOCK_SKEW_TOLERANCE_SECONDS);
     world
         .release_permit_early(&seller, &market.authority, market.pubkey)
         .expect("release_permit_early succeeds on a clean, undisputed era");
@@ -1958,9 +1962,10 @@ fn test_dispute_grant_clock_skew_tolerance_boundary() {
     } = scenario(92);
 
     world.revoke_permit(&seller, market.pubkey).expect("revoke_permit succeeds");
+    world.warp_seconds(CLOCK_SKEW_TOLERANCE_SECONDS);
     world
         .release_permit_early(&seller, &market.authority, market.pubkey)
-        .expect("release_permit_early succeeds");
+        .expect("release_permit_early succeeds once its own mandatory wait has elapsed");
     world
         .grant_permit(&seller, market.pubkey, usdc(200))
         .expect("grant_permit re-inits at the freed address");
@@ -1997,6 +2002,98 @@ fn test_dispute_grant_clock_skew_tolerance_boundary() {
         usdc(80),
     );
     assert_error_code(&result, u32::from(TrustStakeError::ReceiptIssuedBeforeGrant));
+}
+
+#[test]
+fn test_release_permit_early_enforces_clock_skew_wait() {
+    // Boundary test for the fix itself, same style as
+    // `test_release_boundary_exact`: one second short of
+    // `revoked_at + CLOCK_SKEW_TOLERANCE_SECONDS` is refused, exactly at
+    // the boundary succeeds.
+    let mut world = setup_world();
+    let (seller, _token_account) = setup_staked_seller(&mut world, usdc(300));
+    let market = setup_marketplace(&mut world, 60, MIN_COMPLAINT_WINDOW_SECONDS, DEFAULT_BOND_BPS);
+    world.grant_permit(&seller, market.pubkey, usdc(150)).unwrap();
+    world.revoke_permit(&seller, market.pubkey).expect("revoke_permit succeeds");
+
+    // One second before the tolerance has elapsed: refused.
+    world.warp_seconds(CLOCK_SKEW_TOLERANCE_SECONDS - 1);
+    let result = world.release_permit_early(&seller, &market.authority, market.pubkey);
+    assert_error_code(&result, u32::from(TrustStakeError::EarlyReleaseWaitNotElapsed));
+    world.svm.expire_blockhash();
+
+    // Exactly at the boundary succeeds: inclusive, matching the doc's
+    // "now >= revoked_at + CLOCK_SKEW_TOLERANCE_SECONDS".
+    world.warp_seconds(1);
+    world
+        .release_permit_early(&seller, &market.authority, market.pubkey)
+        .expect("release_permit_early succeeds exactly at the clock-skew boundary");
+}
+
+#[test]
+fn test_dispute_rejects_cross_era_receipt_after_fast_early_release() {
+    // Regression test for the early-release cross-era replay: revoke ->
+    // release early -> re-grant with realistic non-zero gaps (minutes, not
+    // the zero-gap a same-instant probe would give), respecting the new
+    // minimum wait. An era-1 receipt from a clean, never-disputed era must
+    // no longer file against era 2's fresh collateral.
+    let Scenario {
+        mut world,
+        market,
+        seller,
+        buyer,
+        buyer_token_account,
+        ..
+    } = scenario(200);
+
+    let stale_receipt = receipt_for(&world, &market, &seller, &buyer, order_id(0xC0), usdc(80));
+
+    // Buyer sits on a genuine, never-disputed receipt for 5 minutes.
+    world.warp_seconds(5 * 60);
+    world.revoke_permit(&seller, market.pubkey).expect("revoke_permit succeeds");
+
+    // The seller must now wait out the clock-skew tolerance before the
+    // early path will run at all -- this is the fix. The old exploit
+    // window (a couple of minutes of coordination) is no longer enough.
+    world.warp_seconds(CLOCK_SKEW_TOLERANCE_SECONDS);
+    world
+        .release_permit_early(&seller, &market.authority, market.pubkey)
+        .expect("release_permit_early succeeds once the mandatory wait has elapsed");
+
+    world
+        .grant_permit(&seller, market.pubkey, usdc(200))
+        .expect("grant_permit re-inits at the freed address");
+
+    let permit_pubkey = world.permit_pda(&seller.pubkey(), &market.pubkey);
+    let granted_at = world.read_permit(&permit_pubkey).granted_at;
+    assert!(
+        granted_at >= stale_receipt.issued_at + CLOCK_SKEW_TOLERANCE_SECONDS,
+        "the fix's whole argument: G >= R + tolerance >= issued_at + tolerance"
+    );
+
+    let stake_before = world.read_seller_stake(&world.stake_pda(&seller.pubkey()));
+    let permit_before = world.read_permit(&permit_pubkey);
+    assert_eq!(stake_before.staked, usdc(300));
+    assert_eq!(stake_before.committed, usdc(200));
+    assert_eq!(permit_before.slashed, 0);
+
+    let result = world.raise_dispute(
+        &buyer,
+        buyer_token_account,
+        market.pubkey,
+        &stale_receipt,
+        &market.receipt_signer,
+        usdc(80),
+    );
+    assert_error_code(&result, u32::from(TrustStakeError::ReceiptIssuedBeforeGrant));
+
+    // Era 2's collateral is untouched: the stale receipt never became a
+    // dispute, so there is nothing to resolve and nothing to slash.
+    let stake_after = world.read_seller_stake(&world.stake_pda(&seller.pubkey()));
+    let permit_after = world.read_permit(&permit_pubkey);
+    assert_eq!(stake_after.staked, stake_before.staked);
+    assert_eq!(stake_after.committed, stake_before.committed);
+    assert_eq!(permit_after.slashed, 0);
 }
 
 #[test]

@@ -14,7 +14,7 @@ use solana_keypair::Keypair;
 use solana_signer::Signer;
 use solana_system_interface::error::SystemError;
 use truststake::{
-    constants::{MAX_BOND_BPS, MAX_COMPLAINT_WINDOW_SECONDS, MIN_COMPLAINT_WINDOW_SECONDS},
+    constants::{CLOCK_SKEW_TOLERANCE_SECONDS, MAX_BOND_BPS, MAX_COMPLAINT_WINDOW_SECONDS, MIN_COMPLAINT_WINDOW_SECONDS},
     error::TrustStakeError,
 };
 
@@ -710,10 +710,14 @@ fn test_release_permit_early_succeeds() {
     world.grant_permit(&seller, marketplace, usdc(150)).unwrap();
     world.revoke_permit(&seller, marketplace).unwrap();
 
-    // No warp at all: proves the wait is genuinely skipped, not just shortened.
+    // Only the CLOCK_SKEW_TOLERANCE_SECONDS wait, not the complaint
+    // window: proves the complaint-window wait is genuinely skipped, not
+    // just shortened, while the mandatory clock-skew wait (this fix)
+    // still applies.
+    world.warp_seconds(CLOCK_SKEW_TOLERANCE_SECONDS);
     world
         .release_permit_early(&seller, &authority, marketplace)
-        .expect("release_permit_early succeeds immediately with both signatures");
+        .expect("release_permit_early succeeds once the clock-skew wait has elapsed, with both signatures");
 
     let stake_pubkey = world.stake_pda(&seller.pubkey());
     assert_eq!(world.read_seller_stake(&stake_pubkey).committed, 0);

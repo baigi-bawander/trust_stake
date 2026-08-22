@@ -48,7 +48,7 @@ of this document's deliverable.
 | 5 | **Receipts live offchain, verified onchain only when disputed**, via the Ed25519 precompile plus instruction introspection. | Zero cost and zero transactions per normal order. A marketplace integrates by signing a struct in its own backend: no wallet, no SOL, no transaction pipeline. Integration cost is what kills infrastructure products. It also lets a buyer file without the marketplace's cooperation, which is what makes an abandoned complaint publicly visible (decision 7). |
 | 6 | **USDC collateral, with the mint pinned by address in `Config`.** Token code is written against `anchor_spl::token_interface` and uses `transfer_checked`, so it runs unchanged against either token program. | Decision 4 introduced fiat-denominated claims; mixing those with SOL collateral forces a price oracle. The risk to close is a mint carrying a transfer fee, which would make the recorded `staked` disagree with the vault's real balance. Pinning one mint by address closes that completely, since one address is one fee policy, and it is stronger than pinning the token program while leaving the door open to a Token Extensions stablecoin later. |
 | 7 | **Complaints are scoped to the permit, and expire.** An open complaint freezes only the collateral committed to that one marketplace. Once raised, a complaint undecided after 30 days may be expired by anyone: nobody is paid, the bond returns in full, the freeze lifts, and the **marketplace** takes a permanent public mark. That 30-day clock starts at filing, not at the order, and a complaint may be filed as late as the end of the complaint window, so a seller's real worst case, from order to a guaranteed-lifted freeze, is the complaint window plus 30 days, up to 60. | All three audit reviewers found the previous version independently. A global open-complaint counter meant the smallest, most forgotten marketplace a seller ever signed up with could freeze their entire collateral forever, for the price of one filing. Expiry closes the liveness hole that appears with no attacker at all: a marketplace that shuts down, loses a key, or ignores its queue. Expiring in the buyer's favour was rejected because it hands every genuine buyer a free option to keep the goods and reclaim the money whenever a marketplace is slow. |
-| 8 | **Two-speed exit, and no withdrawal cooldown.** Collateral above `committed` withdraws immediately. Committed collateral frees only by revoking a permit and waiting out that permit's complaint window, with a cooperative fast path. | Collateral above `committed` is claimable by nobody, so holding it protects no one. Committed collateral is exactly what backs outstanding orders, and releasing it before the complaint window closes is a clean exit scam requiring no race. Splitting the two makes the separate cooldown redundant: revocation plus one complaint window is the only timer the system needs. |
+| 8 | **Two-speed exit, and no withdrawal cooldown.** Collateral above `committed` withdraws immediately. Committed collateral frees only by revoking a permit and waiting out that permit's complaint window, with a cooperative fast path that still enforces a minimum wait of `CLOCK_SKEW_TOLERANCE_SECONDS` after revocation. | Collateral above `committed` is claimable by nobody, so holding it protects no one. Committed collateral is exactly what backs outstanding orders, and releasing it before the complaint window closes is a clean exit scam requiring no race. Splitting the two makes the separate cooldown redundant: revocation plus one complaint window is the only timer the system needs. The fast path's own minimum wait is not optional either: without it, a revoke-release-regrant cycle can complete in minutes, and `raise_dispute` check 7's clock-skew allowance would then accept a receipt from the just-closed era against the freshly granted one. |
 | 9 | **Buyer posts a refundable bond** (default 10%, marketplace-set, protocol ceiling 20%). Upheld returns it with the payout; rejected forfeits it to the seller. Complaint records are deleted and their rent refunded once the receipt is too old to reuse. | The bond's real job is narrow and worth having: it stops a buyer who received the goods from filing anyway on the chance of a refund. The rent refund matters more than it sounds. Permanent records made filing cost roughly $0.35 on top of the bond, which on a $20 order is most of a 12% haircut just to raise a hand, and small orders are the entire target market. A receipt cannot be reused once its complaint window has passed, so the record has no job left after that and can go. |
 | 10 | **A permit's money terms are frozen when the seller signs it; the marketplace's keys stay live.** Cap, complaint window and bond rate are copied onto the permit and never change. The receipt signer and arbiter are read live from the marketplace account. | Freezing the money terms stops a marketplace rewriting the deal after the fact, for example stretching the complaint window to trap a departing seller. Freezing the *keys* would break ordinary operations: a staff change would strand every pending complaint and force every seller to re-sign. Under decision 2 the marketplace can already sign any receipt and rule any way it likes, so changing which key does that grants it nothing new. |
 | 11 | **A marketplace is identified by an immutable ID, not by its authority key.** Keys become ordinary fields, changeable through a two-step transfer. | Seeding the PDA by the authority key makes key rotation structurally impossible: a lost or stolen key forces re-registration, which discards the dispute history and orphans every seller's permit, since each permit names the old account. Two of the three reviews flagged this independently. |
@@ -163,6 +163,25 @@ Each of these is a decision with a reason, not an oversight.
   computable offchain, exactly as this document already relies on for buyer history. A
   consumer that wants attack-resistant seller reputation has to read events and weight by
   marketplace, not read `stake.disputes_total` on its own.
+- **A receipt the marketplace signs after revocation but before release can still land inside
+  the next era's clock-skew tolerance.** `release_permit_early`'s minimum wait
+  (`revoked_at + CLOCK_SKEW_TOLERANCE_SECONDS`) is what keeps check 7 safe against a
+  genuinely stale, pre-revocation receipt, but it does not and cannot protect against a
+  receipt dated *after* `revoked_at`: that receipt is already rejected against era 1 by
+  `ReceiptIssuedAfterRevocation`, yet its `issued_at` can still sit within
+  `CLOCK_SKEW_TOLERANCE_SECONDS` of era 2's `granted_at`, so it can be filed against the new
+  permit instead. This is not the cross-era replay the fix closes -- the receipt is for a
+  real order, correctly dated, and simply happens to have been signed during the wind-down
+  window. It only exists because the marketplace signed a receipt against a permit it had
+  already revoked, which is an integration error on the marketplace's side, not an attack a
+  buyer or seller can engineer: the buyer does not control when the marketplace signs, and
+  the seller does not control when the marketplace ships the receipt. Left unfixed on
+  purpose. Closing it would mean either dropping the clock-skew tolerance entirely, which
+  starts rejecting honest buyers over ordinary clock drift, or teaching `raise_dispute` to
+  distinguish "receipt dated near the boundary because of drift" from "receipt dated near the
+  boundary because it was signed during wind-down," which check 7 cannot do from the receipt
+  alone. A marketplace that stops signing receipts against a permit the instant it revokes it
+  never triggers this at all.
 
 ---
 
@@ -474,10 +493,20 @@ frees no collateral; the permit's remaining allowance stays inside `committed` u
 `release_permit` is permissionless and requires `now >= revoked_at + complaint_window` and
 `open_disputes == 0`. It **subtracts the permit's remaining allowance from
 `stake.committed`**, which is the entire point of releasing, then closes the permit account
-and refunds its rent to the seller, who paid it. `release_permit_early` skips the wait when
-the seller and the marketplace authority both sign, and does the same subtraction. A closed
-permit frees its PDA, and the seller may grant a fresh one at the same address; the
-marketplace's and the seller's counters are what carry the history, not the permit.
+and refunds its rent to the seller, who paid it. `release_permit_early` skips that
+complaint-window wait when the seller and the marketplace authority both sign, and does the
+same subtraction, but still requires `now >= revoked_at + CLOCK_SKEW_TOLERANCE_SECONDS`. That
+minimum wait is not the complaint-window protection in miniature; it exists purely so that
+`raise_dispute` check 7 cannot be replayed. A closed permit frees its PDA, and the seller may
+grant a fresh one at the same address; the marketplace's and the seller's counters are what
+carry the history, not the permit. Because a new grant can only follow a close (`grant_permit`
+uses `init`), the earliest a fresh permit's `granted_at` can land is
+`revoked_at + CLOCK_SKEW_TOLERANCE_SECONDS`, which is exactly the bound check 7 needs: every
+receipt genuinely valid against the closed-out era was issued before `revoked_at`, and
+therefore falls outside check 7's tolerance window against the new one. This wait reuses
+`CLOCK_SKEW_TOLERANCE_SECONDS` rather than a constant of its own on purpose -- the two are one
+guarantee split across two handlers, and giving them separate constants would let a future
+edit to either one silently reopen the replay.
 
 Every counter that has a denominator increments **when a dispute is raised**, not when it
 resolves: `stake.disputes_total` and `marketplace.disputes_total` go up in `raise_dispute`.
@@ -532,7 +561,14 @@ order:
    the future-dating check above gives the marketplace's clock, applied at the other
    boundary -- rejecting a genuinely new order's receipt over a few seconds of drift costs
    a real buyer their complaint) and, at the other end, permit is active or was revoked
-   with `receipt.issued_at < revoked_at` and is still inside the window.
+   with `receipt.issued_at < revoked_at` and is still inside the window. This bound is only
+   safe on the ordinary `release_permit` path by construction, since a complaint window is
+   always at least `MIN_COMPLAINT_WINDOW_SECONDS` (2 days), far longer than the tolerance.
+   It is **not** safe on `release_permit_early` unless that handler enforces its own minimum
+   wait of `CLOCK_SKEW_TOLERANCE_SECONDS` after revocation (decision 8): without it, the
+   entire revoke-release-regrant cycle can complete inside the tolerance window, and a
+   genuine, never-disputed receipt from the wound-down era can be filed and upheld against
+   the freshly granted one.
 8. `claim <= receipt.amount`. A claim larger than the permit's remaining balance is
    **accepted, not rejected**, and pays out whatever remains at resolution. Rejecting it
    would leave 39 of 40 scammed buyers unrecorded and make the seller's public loss count

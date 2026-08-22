@@ -1,7 +1,7 @@
 use anchor_lang::prelude::*;
 
 use crate::{
-    constants::{MARKETPLACE_SEED, PERMIT_SEED, SEED_VERSION, STAKE_SEED},
+    constants::{CLOCK_SKEW_TOLERANCE_SECONDS, MARKETPLACE_SEED, PERMIT_SEED, SEED_VERSION, STAKE_SEED},
     error::TrustStakeError,
     events::PermitReleasedEarly,
     state::{Marketplace, SellerStake, SlashPermit},
@@ -49,16 +49,51 @@ pub struct ReleasePermitEarlyAccountConstraints<'info> {
     pub stake: Account<'info, SellerStake>,
 }
 
-/// Skips `release_permit`'s time-window check when both the seller and
-/// the marketplace authority cooperate; the permit must still be revoked
-/// and `open_disputes == 0` is still required. "Early" means skipping the
-/// wait, not skipping the wind-down itself -- a still-active permit is not
-/// eligible for either release path. Otherwise identical: subtracts the
-/// permit's remaining allowance from `stake.committed`, then the account
-/// constraints close the permit and refund its rent to the seller.
+/// Skips `release_permit`'s complaint-window wait when both the seller and
+/// the marketplace authority cooperate, but still enforces a minimum wait
+/// of `CLOCK_SKEW_TOLERANCE_SECONDS` after revocation; the permit must
+/// still be revoked and `open_disputes == 0` is still required. "Early"
+/// means skipping the complaint window, not skipping every wait -- a
+/// still-active permit is not eligible for either release path. Otherwise
+/// identical: subtracts the permit's remaining allowance from
+/// `stake.committed`, then the account constraints close the permit and
+/// refund its rent to the seller.
+///
+/// The `CLOCK_SKEW_TOLERANCE_SECONDS` wait is load-bearing, not
+/// decorative, and depends on that being the SAME constant `raise_dispute`
+/// check 7 uses (docs/DESIGN-v2.md): both release paths close the permit
+/// PDA and `grant_permit` re-inits at the same address, so a receipt from
+/// a fully wound-down era could otherwise be filed against whatever gets
+/// granted next. Check 7 guards against that with
+/// `receipt.issued_at + CLOCK_SKEW_TOLERANCE_SECONDS >= permit.granted_at`
+/// -- but that guard only holds if the granted_at it is bounding is
+/// already at least one tolerance-worth of time past the revocation that
+/// closed out the previous era. Call the revocation instant R, the release
+/// instant (this handler) L, and the next grant instant G:
+///   - This check forces L >= R + CLOCK_SKEW_TOLERANCE_SECONDS.
+///   - `grant_permit` uses `init`, so it can only run after `permit` is
+///     closed, i.e. G >= L. Combined: G >= R + CLOCK_SKEW_TOLERANCE_SECONDS.
+///   - Check 7 accepts a receipt when
+///     `issued_at >= G - CLOCK_SKEW_TOLERANCE_SECONDS`, which is therefore
+///     `>= R`.
+///   - Every receipt genuinely valid against the closed-out era had
+///     `issued_at < R` (raise_dispute's own revocation check), so every
+///     one of them now falls strictly below check 7's era-2 threshold.
+/// If `CLOCK_SKEW_TOLERANCE_SECONDS` is ever widened, this wait widens
+/// with it automatically since both sides read the same constant; do not
+/// introduce a second constant here, or a future edit to one can silently
+/// break the other.
 pub fn handler(ctx: Context<ReleasePermitEarlyAccountConstraints>) -> Result<()> {
     let permit = &ctx.accounts.permit;
     require!(permit.revoked_at != i64::MAX, TrustStakeError::PermitNotRevoked);
+
+    let now = Clock::get()?.unix_timestamp;
+    let earliest_release = permit
+        .revoked_at
+        .checked_add(CLOCK_SKEW_TOLERANCE_SECONDS)
+        .ok_or(TrustStakeError::MathOverflow)?;
+    require!(now >= earliest_release, TrustStakeError::EarlyReleaseWaitNotElapsed);
+
     require!(permit.open_disputes == 0, TrustStakeError::OpenDisputesRemaining);
 
     let remaining_allowance = permit

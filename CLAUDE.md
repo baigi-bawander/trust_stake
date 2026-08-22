@@ -36,11 +36,11 @@ that breaks an account layout is still cheap on this branch.
 OpenSSL build fails on a clock-skew check. LiteSVM loads the pre-built
 `target/deploy/truststake.so` rather than the native test binary, so any handler change needs
 `anchor build` before the tests reflect it. A `build.rs` guard fails the compile if that
-`.so` is stale. Current state is 122 tests, all passing.
+`.so` is stale. Current state is 124 tests, all passing.
 
 ### Deliberate tradeoffs on v2-rebuild, not bugs
 
-`docs/DESIGN-v2.md` has an "Honest limitations" section with eleven entries, plus numbered
+`docs/DESIGN-v2.md` has an "Honest limitations" section with twelve entries, plus numbered
 design decisions. Those are considered and recorded, not oversights. Read them before
 reporting anything as a defect. The five most often mistaken for bugs:
 

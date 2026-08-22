@@ -26,6 +26,8 @@ pub enum TrustStakeError {
     OpenDisputesRemaining,
     #[msg("Permit must be revoked first")]
     PermitNotRevoked,
+    #[msg("Early release must wait at least the clock-skew tolerance after revocation")]
+    EarlyReleaseWaitNotElapsed,
     #[msg("Instructions sysvar account is not the real one")]
     InvalidInstructionsSysvar,
     #[msg("raise_dispute must be a top-level instruction, not reached through CPI")]
