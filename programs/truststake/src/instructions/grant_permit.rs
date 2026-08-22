@@ -52,6 +52,9 @@ pub struct GrantPermitAccountConstraints<'info> {
 /// current settings and frozen on the permit forever (decision 10);
 /// `revoked_at` starts at the `i64::MAX` sentinel for "active", never zero,
 /// which would make `release_permit`'s window check trivially true.
+/// `granted_at` is stamped from `Clock` here and nowhere else: it marks
+/// the start of this permit's era, which is what lets `raise_dispute`
+/// refuse a receipt left over from whatever occupied this address before.
 pub fn handler(ctx: Context<GrantPermitAccountConstraints>, max_slashable: u64) -> Result<()> {
     require!(max_slashable > 0, TrustStakeError::ZeroAmount);
 
@@ -61,6 +64,7 @@ pub fn handler(ctx: Context<GrantPermitAccountConstraints>, max_slashable: u64) 
     let marketplace_key = ctx.accounts.marketplace.key();
     let complaint_window = ctx.accounts.marketplace.complaint_window;
     let bond_bps = ctx.accounts.marketplace.bond_bps;
+    let granted_at = Clock::get()?.unix_timestamp;
 
     ctx.accounts.permit.set_inner(SlashPermit {
         version: ACCOUNT_VERSION,
@@ -70,10 +74,11 @@ pub fn handler(ctx: Context<GrantPermitAccountConstraints>, max_slashable: u64) 
         max_slashable,
         slashed: 0,
         open_disputes: 0,
+        granted_at,
         revoked_at: i64::MAX,
         complaint_window,
         bond_bps,
-        reserved: [0; 32],
+        reserved: [0; 24],
     });
 
     emit_cpi!(PermitGranted {

@@ -1793,6 +1793,212 @@ fn test_dispute_rejects_receipt_issued_after_revocation() {
         .expect("a receipt issued before the revocation still files");
 }
 
+// ---------------------------------------------------------------------
+// Cross-era receipt replay. SlashPermit carries no field recording which
+// era granted it by default, and both release paths close the permit
+// account so grant_permit re-inits at the identical PDA. Without
+// `granted_at` (and its check 7 bound), nothing ties a receipt to the era
+// that issued it: check 5 measures the complaint window off whichever
+// permit currently sits at the address, and the revocation check alone
+// only rejects a receipt issued after revocation, which a freshly granted
+// permit's revoked_at == i64::MAX makes vacuous. Both reachable paths are
+// covered: `release_permit_early` needs no window-widening at all, and
+// plain `release_permit` needs the marketplace to have raised its
+// complaint window between release and re-grant.
+// ---------------------------------------------------------------------
+
+#[test]
+fn test_dispute_rejects_stale_era_receipt_release_permit_early() {
+    // Needs no window-widening: release_permit_early skips the wait
+    // entirely, so revoke -> release -> re-grant -> raise_dispute can all
+    // land inside the receipt's ORIGINAL window. The 6-hour gap below is
+    // deliberate: it is comfortably past CLOCK_SKEW_TOLERANCE_SECONDS (1
+    // hour), so this exercises a genuinely stale receipt rather than one
+    // that merely lands inside the fix's clock-skew allowance, and it is
+    // comfortably inside the 2-day complaint window, so the window check
+    // is not what is under test here.
+    let Scenario {
+        mut world,
+        market,
+        seller,
+        buyer,
+        buyer_token_account,
+        ..
+    } = scenario(90);
+
+    // Era 1: the $150 permit `scenario` already granted. A real order
+    // happens and the buyer receives a genuine signed receipt, but never
+    // files a complaint. The seller's record against this era is
+    // spotless: no open dispute, ever.
+    let stale_receipt = receipt_for(&world, &market, &seller, &buyer, order_id(0x90), usdc(80));
+    world.warp_seconds(6 * 3_600);
+
+    world.revoke_permit(&seller, market.pubkey).expect("revoke_permit succeeds");
+    world
+        .release_permit_early(&seller, &market.authority, market.pubkey)
+        .expect("release_permit_early succeeds on a clean, undisputed era");
+
+    // Era 2: re-granted at the same (seller, marketplace) PDA with a
+    // different cap, so it is obviously not era 1's collateral.
+    world
+        .grant_permit(&seller, market.pubkey, usdc(200))
+        .expect("grant_permit re-inits at the freed address");
+
+    let stake_before = world.read_seller_stake(&world.stake_pda(&seller.pubkey()));
+    let permit_before = world.read_permit(&world.permit_pda(&seller.pubkey(), &market.pubkey));
+    assert_eq!(stake_before.staked, usdc(300));
+    assert_eq!(stake_before.committed, usdc(200));
+    assert_eq!(permit_before.slashed, 0);
+
+    let result = world.raise_dispute(
+        &buyer,
+        buyer_token_account,
+        market.pubkey,
+        &stale_receipt,
+        &market.receipt_signer,
+        usdc(80),
+    );
+    assert_error_code(&result, u32::from(TrustStakeError::ReceiptIssuedBeforeGrant));
+
+    // Era 2's collateral is untouched: no dispute was ever created, so
+    // there is nothing to resolve and nothing to slash.
+    let stake_after = world.read_seller_stake(&world.stake_pda(&seller.pubkey()));
+    let permit_after = world.read_permit(&world.permit_pda(&seller.pubkey(), &market.pubkey));
+    assert_eq!(stake_after.staked, stake_before.staked);
+    assert_eq!(stake_after.committed, stake_before.committed);
+    assert_eq!(permit_after.slashed, 0);
+}
+
+#[test]
+fn test_dispute_rejects_stale_era_receipt_release_permit_widened_window() {
+    // The other reachable path. Ordinary `release_permit` forces a wait
+    // of `revoked_at + complaint_window` (era 1's own frozen window)
+    // before it will run at all, which already consumes the receipt's
+    // original window by the time release is even possible. So this path
+    // needs the marketplace to raise its complaint window between release
+    // and re-grant: era 2's (wider) window is what leaves the stale
+    // receipt still inside bounds.
+    let Scenario {
+        mut world,
+        market,
+        seller,
+        buyer,
+        buyer_token_account,
+        ..
+    } = scenario(91);
+
+    let stale_receipt = receipt_for(&world, &market, &seller, &buyer, order_id(0x91), usdc(80));
+    let issued_at = stale_receipt.issued_at;
+
+    world.revoke_permit(&seller, market.pubkey).expect("revoke_permit succeeds");
+    world.warp_seconds(MIN_COMPLAINT_WINDOW_SECONDS);
+    let caller = funded_keypair(&mut world);
+    world
+        .release_permit(&caller, seller.pubkey(), market.pubkey)
+        .expect("release_permit succeeds once era 1's own window has elapsed, with nothing open");
+
+    world
+        .update_marketplace(
+            &market.authority,
+            market.pubkey,
+            None,
+            None,
+            Some(MAX_COMPLAINT_WINDOW_SECONDS),
+            None,
+        )
+        .expect("update_marketplace succeeds");
+    world
+        .grant_permit(&seller, market.pubkey, usdc(200))
+        .expect("grant_permit re-inits at the freed address under the new window");
+
+    // Exactly the instant era 1's own 2-day window closed: nowhere near
+    // old enough for era 2's 30-day window to have closed the same
+    // receipt.
+    assert_eq!(world.now(), issued_at + MIN_COMPLAINT_WINDOW_SECONDS);
+
+    let stake_before = world.read_seller_stake(&world.stake_pda(&seller.pubkey()));
+    assert_eq!(stake_before.staked, usdc(300));
+    assert_eq!(stake_before.committed, usdc(200));
+
+    // Check 5's own window is satisfied (era 2 copied the widened 30-day
+    // setting), so if this is refused it can only be check 7 catching the
+    // era mismatch that check 5 cannot see.
+    let result = world.raise_dispute(
+        &buyer,
+        buyer_token_account,
+        market.pubkey,
+        &stale_receipt,
+        &market.receipt_signer,
+        usdc(80),
+    );
+    assert_error_code(&result, u32::from(TrustStakeError::ReceiptIssuedBeforeGrant));
+
+    let stake_after = world.read_seller_stake(&world.stake_pda(&seller.pubkey()));
+    assert_eq!(stake_after.staked, stake_before.staked);
+    assert_eq!(stake_after.committed, stake_before.committed);
+}
+
+#[test]
+fn test_dispute_grant_clock_skew_tolerance_boundary() {
+    // The deliberate tradeoff on check 7: a receipt is accepted down to
+    // `granted_at - CLOCK_SKEW_TOLERANCE_SECONDS`, the same allowance the
+    // issued-in-future check already gives the marketplace's clock
+    // against the chain's (raise_dispute's handler comment explains why:
+    // rejecting a genuinely new order's receipt over a few seconds of
+    // drift costs a real buyer their complaint). One second further back
+    // and it is refused. This also pins the boundary as closed-below:
+    // `issued_at + tolerance >= granted_at` accepts equality.
+    let Scenario {
+        mut world,
+        market,
+        seller,
+        buyer,
+        buyer_token_account,
+        ..
+    } = scenario(92);
+
+    world.revoke_permit(&seller, market.pubkey).expect("revoke_permit succeeds");
+    world
+        .release_permit_early(&seller, &market.authority, market.pubkey)
+        .expect("release_permit_early succeeds");
+    world
+        .grant_permit(&seller, market.pubkey, usdc(200))
+        .expect("grant_permit re-inits at the freed address");
+    let granted_at = world
+        .read_permit(&world.permit_pda(&seller.pubkey(), &market.pubkey))
+        .granted_at;
+
+    let at_tolerance = OrderReceipt {
+        issued_at: granted_at - CLOCK_SKEW_TOLERANCE_SECONDS,
+        ..receipt_for(&world, &market, &seller, &buyer, order_id(0x92), usdc(80))
+    };
+    let past_tolerance = OrderReceipt {
+        issued_at: granted_at - CLOCK_SKEW_TOLERANCE_SECONDS - 1,
+        ..receipt_for(&world, &market, &seller, &buyer, order_id(0x93), usdc(80))
+    };
+
+    world
+        .raise_dispute(
+            &buyer,
+            buyer_token_account,
+            market.pubkey,
+            &at_tolerance,
+            &market.receipt_signer,
+            usdc(80),
+        )
+        .expect("a receipt exactly at the clock-skew allowance is accepted");
+
+    let result = world.raise_dispute(
+        &buyer,
+        buyer_token_account,
+        market.pubkey,
+        &past_tolerance,
+        &market.receipt_signer,
+        usdc(80),
+    );
+    assert_error_code(&result, u32::from(TrustStakeError::ReceiptIssuedBeforeGrant));
+}
+
 #[test]
 fn test_dispute_underpaid_bond_rejected() {
     // The bond is computed by the program and taken from the buyer, never

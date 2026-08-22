@@ -45,7 +45,11 @@ pub struct IncreasePermitAccountConstraints<'info> {
 /// stays bounded by the receipt regardless), but it is a confusing no-op
 /// that only locks up more of the seller's own collateral, and
 /// `revoke_permit` already rejects this same shape of action outright
-/// rather than allowing it silently.
+/// rather than allowing it silently. `granted_at` is untouched here, by
+/// construction: this handler assigns only `max_slashable`, never calls
+/// `set_inner`, and never reads or writes `granted_at` anywhere below. An
+/// increase modifies the permit's existing era, it does not start a new
+/// one, so the receipts it already covers must keep covering it.
 pub fn handler(ctx: Context<IncreasePermitAccountConstraints>, delta: u64) -> Result<()> {
     require!(delta > 0, TrustStakeError::ZeroAmount);
     require!(

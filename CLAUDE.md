@@ -36,7 +36,7 @@ that breaks an account layout is still cheap on this branch.
 OpenSSL build fails on a clock-skew check. LiteSVM loads the pre-built
 `target/deploy/truststake.so` rather than the native test binary, so any handler change needs
 `anchor build` before the tests reflect it. A `build.rs` guard fails the compile if that
-`.so` is stale. Current state is 119 tests, all passing.
+`.so` is stale. Current state is 122 tests, all passing.
 
 ### Deliberate tradeoffs on v2-rebuild, not bugs
 
@@ -64,11 +64,14 @@ reporting anything as a defect. The five most often mistaken for bugs:
 Phases 1, 2 and 3 have each had their own security review, and the dispute lifecycle has had
 two dedicated passes including one adversarial pass that executed real exploit probes. The
 weak spot has consistently been **cross-phase interaction**, which phase-scoped review cannot
-see. Both of the worst bugs found so far lived there: a permit released and re-granted at the
-same address (Phase 2) interacting with a receipt's replay guard (Phase 3), which produced an
-actual double-slash of seller funds; and a PDA seed that did not name every identity it was
-the sole guard for, which permanently locked a buyer out of ever filing a complaint. Both are
-fixed. Assume a third of the same kind exists until you have checked.
+see. Three of the worst bugs found so far lived there, all fixed: a permit released and
+re-granted at the same address (Phase 2) interacting with a receipt's replay guard (Phase 3),
+which produced an actual double-slash of seller funds; a PDA seed that did not name every
+identity it was the sole guard for, which permanently locked a buyer out of ever filing a
+complaint; and `SlashPermit` carrying no field naming which era granted it, so a receipt from
+a fully wound-down era could be filed against whatever got granted next at the same address —
+fixed by `granted_at` and a bound in `raise_dispute` (docs/DESIGN-v2.md, check 7). Assume a
+fourth of the same kind exists until you have checked.
 
 ## Deliberate simplifications, as of now
 

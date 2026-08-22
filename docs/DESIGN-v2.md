@@ -333,10 +333,13 @@ SlashPermit               ["permit", "v2", seller, marketplace]
   max_slashable           u64        increase-only
   slashed                 u64
   open_disputes           u16        blocks release of THIS permit only
+  granted_at              i64        stamped from Clock in grant_permit, never touched
+                                     again; bounds which era a receipt must belong to
+                                     (raise_dispute, check 7)
   revoked_at              i64        i64::MAX = active
   complaint_window        i64        frozen at grant
   bond_bps                u16        frozen at grant
-  reserved                [u8; 32]
+  reserved                [u8; 24]
 
 DisputeRecord             ["dispute", "v2", marketplace, seller, order_id]
   version, bump           u8, u8
@@ -522,8 +525,14 @@ order:
    names the marketplace by its ID because that is what a backend knows; the accounts key off
    the marketplace's address, and the `Marketplace` account's self-validating seeds are what
    ties the two together.
-7. Permit is active, or was revoked with `receipt.issued_at < revoked_at` and is still
-   inside the window.
+7. The receipt was issued during THIS permit's own era, not some other one that used to
+   occupy the address. Both release paths close the permit account and `grant_permit`
+   re-inits at the same PDA, so a receipt is bound to the era that actually issued it:
+   `receipt.issued_at >= granted_at - CLOCK_SKEW_TOLERANCE_SECONDS` (the same allowance
+   the future-dating check above gives the marketplace's clock, applied at the other
+   boundary -- rejecting a genuinely new order's receipt over a few seconds of drift costs
+   a real buyer their complaint) and, at the other end, permit is active or was revoked
+   with `receipt.issued_at < revoked_at` and is still inside the window.
 8. `claim <= receipt.amount`. A claim larger than the permit's remaining balance is
    **accepted, not rejected**, and pays out whatever remains at resolution. Rejecting it
    would leave 39 of 40 scammed buyers unrecorded and make the seller's public loss count

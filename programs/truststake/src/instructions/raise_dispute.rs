@@ -190,9 +190,33 @@ pub fn handler(ctx: Context<RaiseDisputeAccountConstraints>, order_id: [u8; 32],
     require_keys_eq!(receipt.buyer, buyer_key, TrustStakeError::ReceiptBuyerMismatch);
     require!(receipt.order_id == order_id, TrustStakeError::ReceiptOrderMismatch);
 
-    // 7. A revoked permit still covers receipts issued before the
-    // revocation, for as long as their window runs.
+    // 7. The receipt was issued during THIS permit's own era, not some
+    // other one that used to occupy this address. Both release paths
+    // close the permit account and grant_permit re-inits at the same PDA,
+    // so without this, a receipt left over from a fully wound-down era
+    // -- one that was released with open_disputes == 0 and never disputed
+    // -- could be filed against whatever gets granted next. The lower
+    // bound gets the same CLOCK_SKEW_TOLERANCE_SECONDS allowance the
+    // issued-in-future check above does, for the same reason: granted_at
+    // is chain time, receipt.issued_at is the marketplace's own clock,
+    // and a genuinely new order's receipt can land a few seconds behind
+    // granted_at from drift alone. Rejecting that costs a real buyer
+    // their complaint. The tolerance does leave a narrow replay window --
+    // a receipt issued within an hour of the grant can still be filed
+    // against it -- but closing that requires the seller's entire
+    // revoke-release-regrant cycle to land within an hour of that one
+    // receipt's issuance, which the buyer holding the receipt does not
+    // control. That is a bounded coincidence, not the open-ended replay
+    // this check exists to close.
     let permit = &ctx.accounts.permit;
+    require!(
+        receipt
+            .issued_at
+            .checked_add(CLOCK_SKEW_TOLERANCE_SECONDS)
+            .ok_or(TrustStakeError::MathOverflow)?
+            >= permit.granted_at,
+        TrustStakeError::ReceiptIssuedBeforeGrant
+    );
     require!(
         permit.revoked_at == i64::MAX || receipt.issued_at < permit.revoked_at,
         TrustStakeError::ReceiptIssuedAfterRevocation

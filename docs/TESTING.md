@@ -182,6 +182,23 @@ seller they never dealt with.
   the test that proves closing records is safe.
 - `test_dispute_rejects_receipt_issued_after_revocation`: a receipt dated after
   `revoked_at` fails.
+- `test_dispute_rejects_stale_era_receipt_release_permit_early`: a permit is revoked,
+  released early with `open_disputes == 0` (the era was never disputed), and re-granted at
+  the same address with a different cap. A receipt from the old era, held rather than
+  filed, still cannot be used against the new one, even though nothing about the old era
+  was ever in dispute. Needs no window games: `release_permit_early` skips the wait
+  entirely, so the whole cycle can land inside the receipt's original window.
+- `test_dispute_rejects_stale_era_receipt_release_permit_widened_window`: the other
+  reachable path to the same replay. Ordinary `release_permit` already consumes the
+  receipt's original window by the time its own wait elapses, so this one needs the
+  marketplace to raise its complaint window between release and re-grant -- which is
+  exactly what `test_dispute_replay_blocked_across_regrant_with_longer_window` proves safe
+  for the *closable_after* replay guard. `granted_at` is what closes this other route to
+  the same address: the receipt still fails, and for a different reason than that test's.
+- `test_dispute_grant_clock_skew_tolerance_boundary`: a receipt issued exactly
+  `CLOCK_SKEW_TOLERANCE_SECONDS` before the permit's `granted_at` is accepted; one second
+  earlier and it is refused. Pins the deliberate allowance for the marketplace's signing
+  clock lagging the chain's, and which side of the boundary is inclusive.
 - `test_dispute_underpaid_bond_rejected`: a bond transfer smaller than
   `claim * permit.bond_bps / 10_000` fails.
 - `test_buyer_cannot_resolve`: a non-arbiter calling `resolve_dispute` fails.

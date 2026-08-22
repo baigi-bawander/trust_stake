@@ -58,6 +58,8 @@ pub enum TrustStakeError {
     ReceiptOrderMismatch,
     #[msg("Receipt was issued after the permit was revoked")]
     ReceiptIssuedAfterRevocation,
+    #[msg("Receipt was issued before the permit was granted")]
+    ReceiptIssuedBeforeGrant,
     #[msg("Claim exceeds the receipt's order amount")]
     ClaimExceedsReceipt,
     #[msg("Only the marketplace's arbiter may resolve this dispute")]
