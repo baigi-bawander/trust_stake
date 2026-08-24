@@ -55,14 +55,47 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-anchor1.1.2-
 
+      # anchor-cli 1.1.2 will not compile under this repo's rust-toolchain.toml
+      # pin (1.89.0): a transitive dependency of the CLI, cargo-platform
+      # 0.3.3, requires rustc 1.91, and every cargo invocation run from a
+      # working directory inside this checkout picks up that pin automatically,
+      # `cargo install` included. Installing under a separately-fetched
+      # `stable` toolchain instead of bumping the pin is deliberate, not a
+      # shortcut: anchor-cli is only an orchestrator that shells out to
+      # `cargo build-sbf`, which compiles the program itself through the
+      # separate sbpf toolchain, so whichever host compiler happened to build
+      # the CLI binary has zero effect on the bytes anchor build produces.
+      # `stable` rather than a second exact pin (e.g. 1.91) is also
+      # deliberate: pinning the install would only move this same failure to
+      # whenever some future Anchor dependency wants 1.92, for no
+      # corresponding benefit, since the install toolchain doesn't feed into
+      # program output either way.
+      #
+      # Do NOT resolve a future recurrence of this by raising
+      # rust-toolchain.toml's 1.89.0 pin instead. That pin is load-bearing:
+      # the devnet binary at 3Vc6M8Az9h2GtDmqqhQKURqTKKygNfekQq7PoJris6V2 was
+      # compiled under 1.89.0 and its onchain bytes were SHA-256 verified
+      # against the local target/deploy/truststake.so built the same way. A
+      # different rustc version produces different output, so raising the
+      # pin would silently break that byte-for-byte reproducibility against
+      # what is actually live on devnet, even though the build would still
+      # succeed. If `stable` itself starts failing here again because some
+      # future anchor-cli dependency wants a compiler newer than whatever
+      # `stable` is at the time, that is expected and self-resolving on the
+      # next run, not a reason to touch the pin.
+      - name: Install a stable toolchain to build anchor-cli itself
+        run: rustup toolchain install stable --profile minimal
+
       # Pinned to 1.1.2 to match anchor-lang/anchor-spl's exact pin in
       # programs/truststake/Cargo.toml (docs/DESIGN-v2.md, Phase 0): the
       # CLI and the crates it scaffolds against have to move together, or
       # the CLI just warns on every invocation. `cargo install` no-ops if
       # this exact version is already present, which the cache above makes
-      # the common case.
+      # the common case. `cargo +stable` selects the toolchain installed
+      # above instead of the repo-pinned one rustup would otherwise pick up
+      # from rust-toolchain.toml; see the comment above for why.
       - name: Install anchor-cli 1.1.2
-        run: cargo install anchor-cli --version 1.1.2 --locked
+        run: cargo +stable install anchor-cli --version 1.1.2 --locked
 
       - name: Install the Solana CLI (Agave)
         run: |
