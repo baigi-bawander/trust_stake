@@ -186,12 +186,13 @@ seller's free balance grows without a deposit.
 | Domain separation | receipt `domain`, `program_id`, `chain_id` | a signature from another context cannot be read as a receipt |
 | Events | 19 `emit_cpi!` events | buyer history is derived from these, so `emit_cpi!` rather than `emit!` |
 
-Coverage as of Phase 4: 128 tests passing with no warnings, every one of the nineteen
-handlers exercised, and every one of the 35 error variants asserted by name somewhere in the
+Coverage as of Phase 4: 132 tests passing with no warnings, every one of the nineteen
+handlers exercised, and every one of the 38 error variants asserted by name somewhere in the
 suite. `raise_dispute` measures 953 bytes of the 1,232-byte transaction limit. Its compute
 cost is not a single figure: the `dispute` PDA's canonical bump is searched for onchain and
 one of its seeds is the seller's freshly generated pubkey, so measured runs against the same
-build range from 42,318 to 51,318 of 200,000 compute units.
+build vary; local sampling across dozens of runs measured as low as 42,318 and as high as
+58,818 of 200,000 compute units, comfortably under budget at either end.
 
 ## Where to look hardest
 
@@ -224,6 +225,6 @@ build range from 42,318 to 51,318 of 200,000 compute units.
   upgrade authority is answerable, and is not a multisig: `solana program show` returns
   `EE4skmuEcaL4ybktFhp7sUfr84to78KQKoNsAAu8L7jG`, the same single ordinary keypair as
   `constants::INITIAL_ADMIN`. The README makes no claim about upgrade authority either way;
-  moving both to a Squads multisig is tracked in docs/ROADMAP.md.
+  moving both to a Squads multisig is a known future step, not yet done.
 - The event log is the only durable record of a closed dispute. No indexer exists yet, and
   `getProgramAccounts` with unindexed `memcmp` is the only alternative. Who runs it?

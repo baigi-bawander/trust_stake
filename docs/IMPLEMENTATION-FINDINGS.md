@@ -55,9 +55,9 @@ transaction fee, and the result is that their entire collateral becomes unreacha
 complaint against them becomes unresolvable. The attacker gains nothing, so this is denial of
 service rather than theft, but it is permanent under the deployed bytecode. It is recoverable
 only by upgrading the program, which the deployment supports; the upgrade authority is
-`constants::INITIAL_ADMIN`, a single ordinary keypair, not a multisig (docs/ROADMAP.md tracks
-moving it to one). Rated High rather than Critical on that basis alone: with a frozen program
-it would be Critical.
+`constants::INITIAL_ADMIN`, a single ordinary keypair, not a multisig, and moving it to one
+is a known future step, not yet done. Rated High rather than Critical on that basis alone:
+with a frozen program it would be Critical.
 
 `expire_dispute` carries no conservation assertion, so a frozen seller's permits can still be
 unfrozen and released after 30 days. The collateral behind them still cannot move.

@@ -17,6 +17,11 @@ to post a deposit, because the cash leg cannot be escrowed. That gap is where th
 
 ## Where the code is today
 
+*Note, 2026-08-25: this section describes the state of the code before this document's
+rebuild, which is what motivated writing this document in the first place. The rebuild is
+now complete, and the program ID below runs v2, not the prototype described here. See
+README.md and docs/TESTING.md for the current account model and test count.*
+
 A working Anchor prototype on devnet (`3Vc6M8Az9h2GtDmqqhQKURqTKKygNfekQq7PoJris6V2`):
 three accounts, four instruction handlers, 3/3 LiteSVM tests passing. The Rust is clean.
 The mechanism is not a product:
@@ -32,8 +37,7 @@ This plan rebuilds it as a multi-tenant protocol with portable seller collateral
 
 **Scope for this build:** the program and its tests. The devnet demo exercises two
 marketplaces with different settings, because one marketplace cannot demonstrate
-portability. A frontend is tracked separately in [ROADMAP.md](ROADMAP.md) and is not part
-of this document's deliverable.
+portability. A frontend is out of scope and is not part of this document's deliverable.
 
 ---
 
@@ -819,10 +823,9 @@ Then `cargo run --example devnet_demo` for real devnet signatures. The demo walk
   `constants::INITIAL_ADMIN`, confirmed by `solana program show`. The README does not claim
   otherwise; nothing in it mentions upgrade authority, Squads, or a multisig. Moving the
   protocol authority and the upgrade authority to a Squads multisig, and saying so in the
-  README, is tracked in `docs/ROADMAP.md`, "Squads multisig on the protocol authority and the
-  upgrade authority". Programs on Solana are normally upgradable so authors can ship fixes;
-  the claim worth making once that move happens is that the deployed rules cannot be
-  bypassed, not that the code is frozen.
+  README, is a known future step, not yet done. Programs on Solana are normally upgradable
+  so authors can ship fixes; the claim worth making once that move happens is that the
+  deployed rules cannot be bypassed, not that the code is frozen.
 - **Parameter defaults:** `bond_bps` 1000 (10%), protocol ceiling 2000 (20%);
   `complaint_window` 2 to 30 days, demo marketplaces at 2 and 7; `DISPUTE_EXPIRY` 30 days,
   fixed; no minimum stake.
@@ -878,9 +881,8 @@ Written for whoever compares this against the audit in
     (decision 12), so cash-trading and shipped-goods marketplaces can both use the program.
 11. **The demo covers two marketplaces, not one** (decision 14), because portability and
     permit-scoped freezing are invisible with one.
-12. **The frontend is no longer described as out of scope**; it is tracked in
-    [ROADMAP.md](ROADMAP.md), which previously contradicted this file by calling it the
-    highest-leverage remaining item.
+12. **The frontend is no longer described as out of scope**; a separate tracking document
+    previously contradicted this file by calling it the highest-leverage remaining item.
 13. **One correction to the previous risk list, and one risk it missed.** Compute was never
     the constraint; transaction size is. But the feasibility review's claim that LiteSVM
     0.10.0 supports precompiles behind a feature flag is unverified, and `cargo tree -d`

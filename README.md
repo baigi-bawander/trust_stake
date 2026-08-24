@@ -92,6 +92,27 @@ Collateral lives in a separate token vault (`stake_vault`), not on the
 `SellerStake` account itself, so a slash only ever moves vault tokens and
 never touches the account's own rent-exempt balance.
 
+## Documentation
+
+- [`docs/DESIGN-v2.md`](docs/DESIGN-v2.md) — the full design: the account model, every
+  instruction handler, the offchain receipt format, integration requirements for a
+  marketplace, and the honest limitations. Read this before integrating a marketplace or
+  questioning a design decision above.
+- [`docs/TESTING.md`](docs/TESTING.md) — the test plan behind the 132-test suite, plus the
+  live devnet transaction signatures proving it runs onchain and not only in LiteSVM. Read
+  this before adding a test or trusting a "this should already be covered" claim.
+- [`docs/SECURITY-CONTEXT.md`](docs/SECURITY-CONTEXT.md) — architectural reconnaissance
+  written for whoever audits the program next: what each control defends against and where
+  the weak spots are, without reporting findings of its own. Read this before starting a
+  security review.
+- [`docs/AUDIT-v2-FINDINGS.md`](docs/AUDIT-v2-FINDINGS.md) — 57 findings from three
+  independent adversarial reviews of the design, run before any code was written. Read this
+  to see what a design-only review caught and why some of the account model exists.
+- [`docs/IMPLEMENTATION-FINDINGS.md`](docs/IMPLEMENTATION-FINDINGS.md) — findings from a
+  sharp-edge sweep over the built program, each one reproduced against the compiled program
+  rather than inferred from reading. Read this for what building the design turned up that
+  reviewing it on paper did not.
+
 ## Build and test
 
 ```bash
