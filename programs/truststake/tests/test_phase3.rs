@@ -27,8 +27,8 @@ use solana_system_interface::error::SystemError;
 use solana_transaction::versioned::VersionedTransaction;
 use truststake::{
     constants::{
-        CLOCK_SKEW_TOLERANCE_SECONDS, DISPUTE_EXPIRY_SECONDS, MAX_BOND_BPS, MAX_COMPLAINT_WINDOW_SECONDS,
-        MIN_COMPLAINT_WINDOW_SECONDS, RECEIPT_DOMAIN, SECONDS_PER_DAY,
+        CHAIN_ID_DEVNET, CLOCK_SKEW_TOLERANCE_SECONDS, DISPUTE_EXPIRY_SECONDS, MAX_BOND_BPS,
+        MAX_COMPLAINT_WINDOW_SECONDS, MIN_COMPLAINT_WINDOW_SECONDS, RECEIPT_DOMAIN, SECONDS_PER_DAY,
     },
     error::TrustStakeError,
     receipt::OrderReceipt,
@@ -36,7 +36,7 @@ use truststake::{
 };
 
 const SOL: u64 = 1_000_000_000;
-const DEFAULT_CHAIN_ID: u8 = 1;
+const DEFAULT_CHAIN_ID: u8 = CHAIN_ID_DEVNET;
 const DEFAULT_BOND_BPS: u16 = 1_000;
 
 /// Long enough that the permit's complaint window, not the receipt's own

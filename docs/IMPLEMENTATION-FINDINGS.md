@@ -54,9 +54,10 @@ The program's own log shows the gap it refuses to proceed past: `Left: 300000001
 transaction fee, and the result is that their entire collateral becomes unreachable and every
 complaint against them becomes unresolvable. The attacker gains nothing, so this is denial of
 service rather than theft, but it is permanent under the deployed bytecode. It is recoverable
-only by upgrading the program, which the deployment supports and which the README says is
-held by a multisig. Rated High rather than Critical on that basis alone: with a frozen
-program it would be Critical.
+only by upgrading the program, which the deployment supports; the upgrade authority is
+`constants::INITIAL_ADMIN`, a single ordinary keypair, not a multisig (docs/ROADMAP.md tracks
+moving it to one). Rated High rather than Critical on that basis alone: with a frozen program
+it would be Critical.
 
 `expire_dispute` carries no conservation assertion, so a frozen seller's permits can still be
 unfrozen and released after 30 days. The collateral behind them still cannot move.

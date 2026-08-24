@@ -22,6 +22,15 @@ pub const ACCOUNT_VERSION: u8 = 1;
 /// field, and it is what stops a `receipt_signer` key that also signs
 /// something else from having one of those other signatures reinterpreted
 /// as a receipt.
+///
+/// Changing this value in an upgrade is silently unrecoverable: a receipt
+/// is never stored onchain, only handed to the buyer at the moment of sale
+/// and re-verified from its own bytes when `raise_dispute` runs
+/// (`receipt.rs`). Every receipt a marketplace's backend has already
+/// signed under the old domain is bytes sitting in buyers' hands, off the
+/// chain and out of this program's reach; changing `RECEIPT_DOMAIN` makes
+/// every one of them fail `raise_dispute`'s domain check forever, with no
+/// migration path, because there is no account to migrate.
 pub const RECEIPT_DOMAIN: [u8; 21] = *b"truststake:receipt:v1";
 
 /// `initialize_config` only accepts this signer, so a freshly deployed
@@ -30,6 +39,15 @@ pub const RECEIPT_DOMAIN: [u8; 21] = *b"truststake:receipt:v1";
 /// to wherever the protocol wants afterwards, only through the two-step
 /// transfer (`propose_config_authority` / `accept_config_authority`).
 pub const INITIAL_ADMIN: Pubkey = pubkey!("EE4skmuEcaL4ybktFhp7sUfr84to78KQKoNsAAu8L7jG");
+
+/// The only two values `Config.chain_id` may hold; `initialize_config`
+/// rejects everything else. `chain_id` is pinned forever once set (there is
+/// no `update_config`), so an unchecked value here is unrepairable: a typo
+/// would let every receipt from the wrong cluster verify successfully
+/// (`raise_dispute`'s `WrongChainId` check compares against whatever is
+/// stored, not against reality).
+pub const CHAIN_ID_DEVNET: u8 = 1;
+pub const CHAIN_ID_MAINNET: u8 = 2;
 
 pub const SECONDS_PER_DAY: i64 = 24 * 60 * 60;
 

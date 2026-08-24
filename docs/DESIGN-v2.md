@@ -114,6 +114,11 @@ Each of these is a decision with a reason, not an oversight.
   `close_stake`, so roughly half a cent stays locked in the stake account and its vault after
   the last token is withdrawn. Adding a handler to reclaim it is a few lines and is deferred
   rather than overlooked: it is worth less than the transaction fee to call it.
+- **A marketplace that shuts down for good leaves its account rent behind too.** There is no
+  `close_marketplace`, so a `Marketplace` and its `bond_vault` strand their rent exactly the
+  way `SellerStake` and its `stake_vault` do above, once the marketplace stops taking new
+  orders and its last dispute is closed. Same reasoning, same deferral: adding a handler to
+  reclaim it is a few lines and is worth less than the transaction fee to call it.
 - **A rotated receipt-signer key is remembered once, not as a ring.**
   `Marketplace.prev_receipt_signer` holds only the key rotated away from, so a marketplace
   that rotates twice inside one complaint window overwrites it, and a receipt genuinely
@@ -303,6 +308,38 @@ plus reserved padding, so fields can be added later without migrating accounts t
 real collateral. All seeds carry a `"v2"` component so v2 accounts cannot collide with the
 deployed v1 layout.
 
+**The claim that fields can be added later without migrating accounts is only true if every
+new field is appended, never inserted.** Borsh serializes a struct positionally, by declared
+field order, not by name. On a program that has already been deployed, adding a field anywhere
+but immediately before `reserved` shifts the byte offset of every field declared after it. A
+struct upgraded that way still compiles and still deserializes without error, because Borsh has
+no schema to check against, just a byte count to consume. Concretely: if `revoked_at` shifted
+eight bytes to the right, every existing permit would deserialize `revoked_at` from bytes that
+used to hold `complaint_window`, `complaint_window` from bytes that used to hold `bond_bps`,
+and so on down the struct. A live permit that was actually still open (`revoked_at == i64::MAX`)
+would very likely read back a small, already-past `revoked_at` after the shift, so
+`release_permit`'s window check would pass immediately: the collateral behind a permit the
+seller never revoked becomes withdrawable, with no error, no panic, and no trace in the logs.
+`SlashPermit.granted_at` was inserted mid-struct this way during the v2 build (fixed before
+deployment, see the account layout below); the rule going forward is to always add the new
+field as the last one before `reserved`, never between existing fields, once a program version
+holding this struct has been deployed.
+
+**`SEED_VERSION` does not move again once real collateral exists, either.** The
+changelog below (item 14) explains why this deployment carries versioned seeds at all: moving
+from `v1`'s unversioned seeds to `"v2"` was only safe because the v1 prototype held nothing of
+value, which is also true today, before this branch deploys. Once a `SlashPermit`,
+`SellerStake`, or any other PDA under `SEED_VERSION` is backing real collateral, bumping the
+seed to `"v3"` would derive a different address for every one of those PDAs, silently
+stranding whatever they hold: the program would start deriving and validating against
+addresses nobody funded, while the old, still-funded accounts sit at their `"v2"` addresses
+with no instruction able to reach them, because every constraint would derive the new seed.
+The decision: `SEED_VERSION` may not change again after this deployment holds real collateral,
+except through a dedicated migration instruction that signs for the *old* seed bytes
+explicitly (deriving and validating against `"v2"`, not whatever `SEED_VERSION` has become) to
+move funds out of the old PDA before anything starts deriving under a new one. A seed bump
+with no such instruction is a stranding bug, not a version bump.
+
 ```
 Config                    ["config", "v2"]
   version, bump           u8, u8
@@ -352,12 +389,12 @@ SlashPermit               ["permit", "v2", seller, marketplace]
   max_slashable           u64        increase-only
   slashed                 u64
   open_disputes           u16        blocks release of THIS permit only
-  granted_at              i64        stamped from Clock in grant_permit, never touched
-                                     again; bounds which era a receipt must belong to
-                                     (raise_dispute, check 7)
   revoked_at              i64        i64::MAX = active
   complaint_window        i64        frozen at grant
   bond_bps                u16        frozen at grant
+  granted_at              i64        added after the fields above; stamped from Clock in
+                                     grant_permit, never touched again; bounds which era a
+                                     receipt must belong to (raise_dispute, check 7)
   reserved                [u8; 24]
 
 DisputeRecord             ["dispute", "v2", marketplace, seller, order_id]
@@ -763,10 +800,15 @@ Then `cargo run --example devnet_demo` for real devnet signatures. The demo walk
 - **Per-marketplace write-lock contention.** One marketplace account and one bond vault
   serialise that marketplace's dispute throughput. Not a near-term problem; the fix is
   sharded counters.
-- **Upgrade authority points at a Squads multisig,** stated in the README. It is the
-  cheapest credibility win available and answers the "single trusted party" criticism
-  directly. Programs on Solana are normally upgradable so authors can ship fixes; the claim
-  worth making is that the deployed rules cannot be bypassed, not that the code is frozen.
+- **Upgrade authority is a single ordinary keypair, not a multisig.** The deployed program's
+  authority is `EE4skmuEcaL4ybktFhp7sUfr84to78KQKoNsAAu8L7jG`, the same key as
+  `constants::INITIAL_ADMIN`, confirmed by `solana program show`. The README does not claim
+  otherwise; nothing in it mentions upgrade authority, Squads, or a multisig. Moving the
+  protocol authority and the upgrade authority to a Squads multisig, and saying so in the
+  README, is tracked in `docs/ROADMAP.md`, "Squads multisig on the protocol authority and the
+  upgrade authority". Programs on Solana are normally upgradable so authors can ship fixes;
+  the claim worth making once that move happens is that the deployed rules cannot be
+  bypassed, not that the code is frozen.
 - **Parameter defaults:** `bond_bps` 1000 (10%), protocol ceiling 2000 (20%);
   `complaint_window` 2 to 30 days, demo marketplaces at 2 and 7; `DISPUTE_EXPIRY` 30 days,
   fixed; no minimum stake.

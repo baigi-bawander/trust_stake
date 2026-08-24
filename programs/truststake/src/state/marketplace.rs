@@ -36,14 +36,31 @@ pub struct Marketplace {
     pub reserved: [u8; 64],
 }
 
-/// Rejects settings a `Marketplace` must never carry, checked once at the
-/// point they are accepted (`register_marketplace`, `update_marketplace`)
-/// rather than re-checked in every handler that later reads them.
-pub fn validate_marketplace_settings(complaint_window: i64, bond_bps: u16) -> Result<()> {
+/// Rejects a `complaint_window` a `Marketplace` must never carry. Split out
+/// from `validate_bond_bps` so `update_marketplace` can validate only the
+/// field a caller actually supplied, rather than re-checking a stored value
+/// the caller left untouched against today's bounds (see that handler's
+/// doc comment).
+pub fn validate_complaint_window(complaint_window: i64) -> Result<()> {
     require!(
         (MIN_COMPLAINT_WINDOW_SECONDS..=MAX_COMPLAINT_WINDOW_SECONDS).contains(&complaint_window),
         TrustStakeError::ComplaintWindowOutOfBounds
     );
+    Ok(())
+}
+
+/// Rejects a `bond_bps` a `Marketplace` must never carry. See
+/// `validate_complaint_window`.
+pub fn validate_bond_bps(bond_bps: u16) -> Result<()> {
     require!(bond_bps <= MAX_BOND_BPS, TrustStakeError::BondBpsTooHigh);
+    Ok(())
+}
+
+/// Rejects settings a `Marketplace` must never carry, checked once at the
+/// point they are both first accepted (`register_marketplace`, where there
+/// is no stored value yet to grandfather).
+pub fn validate_marketplace_settings(complaint_window: i64, bond_bps: u16) -> Result<()> {
+    validate_complaint_window(complaint_window)?;
+    validate_bond_bps(bond_bps)?;
     Ok(())
 }

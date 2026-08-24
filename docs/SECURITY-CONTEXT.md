@@ -220,7 +220,10 @@ build range from 42,318 to 51,318 of 200,000 compute units.
 - Should `raise_dispute` be reachable through CPI? Phase 3 decided no and enforces it, on the
   strength of TESTING.md naming a CPI-wrapper test and audit finding TS-25. The design doc's
   numbered check list does not mention it, and the restriction costs future composability.
-- Who holds the `INITIAL_ADMIN` key, and is the deployed program's upgrade authority already
-  the Squads multisig the README claims? Neither is answerable from the source.
+- Who holds the `INITIAL_ADMIN` key? Not answerable from the source. The deployed program's
+  upgrade authority is answerable, and is not a multisig: `solana program show` returns
+  `EE4skmuEcaL4ybktFhp7sUfr84to78KQKoNsAAu8L7jG`, the same single ordinary keypair as
+  `constants::INITIAL_ADMIN`. The README makes no claim about upgrade authority either way;
+  moving both to a Squads multisig is tracked in docs/ROADMAP.md.
 - The event log is the only durable record of a closed dispute. No indexer exists yet, and
   `getProgramAccounts` with unindexed `memcmp` is the only alternative. Who runs it?

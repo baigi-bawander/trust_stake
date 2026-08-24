@@ -13,12 +13,13 @@ use solana_keypair::Keypair;
 use solana_signer::Signer;
 use solana_system_interface::error::SystemError;
 use truststake::{
-    constants::{MAX_BOND_BPS, MAX_COMPLAINT_WINDOW_SECONDS, MIN_COMPLAINT_WINDOW_SECONDS},
+    constants::{CHAIN_ID_DEVNET, MAX_BOND_BPS, MAX_COMPLAINT_WINDOW_SECONDS, MIN_COMPLAINT_WINDOW_SECONDS},
     error::TrustStakeError,
+    state::Marketplace,
 };
 
 const SOL: u64 = 1_000_000_000;
-const DEFAULT_CHAIN_ID: u8 = 1;
+const DEFAULT_CHAIN_ID: u8 = CHAIN_ID_DEVNET;
 const DEFAULT_BOND_BPS: u16 = 1_000;
 
 fn marketplace_id(tag: u8) -> [u8; 16] {
@@ -72,6 +73,21 @@ fn test_initialize_config_succeeds() {
     assert_eq!(config.pending_authority, Pubkey::default());
     assert_eq!(config.collateral_mint, world.mint);
     assert_eq!(config.chain_id, DEFAULT_CHAIN_ID);
+}
+
+#[test]
+fn test_initialize_config_rejects_unknown_chain_id() {
+    let mut world = World::new();
+    let admin = initial_admin_keypair();
+
+    // Neither the devnet nor the mainnet tag: every other u8 value must be
+    // rejected, since chain_id has no update path once set.
+    let result = world.initialize_config(&admin, 99);
+    assert_error_code(&result, u32::from(TrustStakeError::InvalidChainId));
+    assert!(
+        world.svm.get_account(&world.config_pda()).is_none(),
+        "config must not have been created"
+    );
 }
 
 #[test]
@@ -380,6 +396,76 @@ fn test_update_marketplace_succeeds() {
     assert_eq!(updated.arbiter, new_arbiter);
     assert_eq!(updated.complaint_window, MAX_COMPLAINT_WINDOW_SECONDS);
     assert_eq!(updated.bond_bps, MAX_BOND_BPS);
+}
+
+#[test]
+fn test_update_marketplace_grandfathers_stored_settings() {
+    let mut world = World::new();
+    let admin = initial_admin_keypair();
+    world.initialize_config(&admin, DEFAULT_CHAIN_ID).unwrap();
+
+    let authority = funded_keypair(&mut world);
+    let id = marketplace_id(43);
+    world
+        .register_marketplace(
+            &authority,
+            id,
+            unique_pubkey(),
+            unique_pubkey(),
+            MIN_COMPLAINT_WINDOW_SECONDS,
+            DEFAULT_BOND_BPS,
+        )
+        .unwrap();
+    let marketplace = world.marketplace_pda(&id);
+
+    // Stand in for a bound tightened by a later program upgrade: nothing
+    // in the current instruction set can produce an out-of-bounds
+    // bond_bps, so write one directly into account state via the harness,
+    // the same way test_conservation_asserted_onchain stands in for a
+    // vault pushed below its ledger.
+    let mut account = world.svm.get_account(&marketplace).expect("marketplace exists");
+    let mut state = Marketplace::try_deserialize(&mut account.data.as_slice()).expect("valid Marketplace data");
+    state.bond_bps = MAX_BOND_BPS + 1;
+    let mut data = Vec::new();
+    state
+        .try_serialize(&mut data)
+        .expect("serialize the forced-illegal marketplace state");
+    account.data = data;
+    world
+        .svm
+        .set_account(marketplace, account)
+        .expect("force an out-of-bounds bond_bps");
+
+    // Rotating an unrelated field must still succeed: the stored bond_bps
+    // was never touched, so it is grandfathered rather than re-checked
+    // against today's bounds.
+    let new_receipt_signer = unique_pubkey();
+    world
+        .update_marketplace(&authority, marketplace, Some(new_receipt_signer), None, None, None)
+        .expect("rotating receipt_signer must succeed despite a stored bond_bps that would fail today's bounds");
+
+    let updated = world.read_marketplace(&marketplace);
+    assert_eq!(updated.receipt_signer, new_receipt_signer);
+    assert_eq!(
+        updated.bond_bps,
+        MAX_BOND_BPS + 1,
+        "the illegal stored value must be left untouched, not silently reset"
+    );
+}
+
+#[test]
+fn test_update_marketplace_still_validates_a_supplied_bond_bps() {
+    let mut world = World::new();
+    let admin = initial_admin_keypair();
+    world.initialize_config(&admin, DEFAULT_CHAIN_ID).unwrap();
+    let (authority, marketplace) = setup_marketplace(&mut world, 44);
+
+    let result = world.update_marketplace(&authority, marketplace, None, None, None, Some(MAX_BOND_BPS + 1));
+    assert_error_code(&result, u32::from(TrustStakeError::BondBpsTooHigh));
+
+    // Untouched, and still legal, so this failure did not grandfather
+    // anything -- validation still runs on a field the caller supplied.
+    assert_eq!(world.read_marketplace(&marketplace).bond_bps, DEFAULT_BOND_BPS);
 }
 
 #[test]

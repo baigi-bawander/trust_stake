@@ -1,5 +1,12 @@
 use anchor_lang::prelude::*;
 
+/// Anchor numbers these by position, starting at 6000, and publishes the
+/// numbering in the IDL. **Add new variants at the end only.** Inserting one
+/// renumbers every variant after it, which silently invalidates any client or
+/// explorer still holding an older IDL: the same failure the account model's
+/// append-only rule exists for, reached through the IDL rather than through
+/// Borsh. Tests are immune because they compare `u32::from(TrustStakeError::X)`
+/// rather than a literal, so nothing in this repo catches a bad insertion.
 #[error_code]
 pub enum TrustStakeError {
     #[msg("Only the compiled-in initial admin may call this")]
@@ -76,4 +83,6 @@ pub enum TrustStakeError {
     DisputeNotClosable,
     #[msg("Dispute has passed its expiry and can only be expired, not resolved")]
     DisputeExpired,
+    #[msg("chain_id must be the devnet or mainnet tag")]
+    InvalidChainId,
 }

@@ -2,7 +2,7 @@ use anchor_lang::prelude::*;
 use anchor_spl::token_interface::Mint;
 
 use crate::{
-    constants::{ACCOUNT_VERSION, CONFIG_SEED, INITIAL_ADMIN, SEED_VERSION},
+    constants::{ACCOUNT_VERSION, CHAIN_ID_DEVNET, CHAIN_ID_MAINNET, CONFIG_SEED, INITIAL_ADMIN, SEED_VERSION},
     error::TrustStakeError,
     events::ConfigInitialized,
     state::Config,
@@ -43,6 +43,11 @@ pub struct InitializeConfigAccountConstraints<'info> {
 /// the two-step transfer (`propose_config_authority` /
 /// `accept_config_authority`).
 pub fn handler(ctx: Context<InitializeConfigAccountConstraints>, chain_id: u8) -> Result<()> {
+    require!(
+        chain_id == CHAIN_ID_DEVNET || chain_id == CHAIN_ID_MAINNET,
+        TrustStakeError::InvalidChainId
+    );
+
     ctx.accounts.config.set_inner(Config {
         version: ACCOUNT_VERSION,
         bump: ctx.bumps.config,

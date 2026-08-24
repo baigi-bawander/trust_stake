@@ -36,7 +36,7 @@ that breaks an account layout is still cheap on this branch.
 OpenSSL build fails on a clock-skew check. LiteSVM loads the pre-built
 `target/deploy/truststake.so` rather than the native test binary, so any handler change needs
 `anchor build` before the tests reflect it. A `build.rs` guard fails the compile if that
-`.so` is stale. Current state is 128 tests, all passing.
+`.so` is stale. Current state is 132 tests, all passing.
 
 ### Deliberate tradeoffs on v2-rebuild, not bugs
 
@@ -85,7 +85,7 @@ fourth of the same kind exists until you have checked.
 
 - **Program logic:** `programs/truststake/src/` — `lib.rs` is the entrypoint/index, `state.rs` defines the three accounts, `instructions/` has the four handlers.
 - **Unit tests:** `programs/truststake/tests/test_truststake.rs` — LiteSVM, in-process, fast. Run with `cargo test` from `programs/truststake/`.
-- **Real devnet demo:** `programs/truststake/examples/devnet_demo.rs` — replays the same flow as real transactions. Run with `cargo run --example devnet_demo` from `programs/truststake/`. It funds two throwaway keypairs via direct transfer (not airdrop, since devnet airdrops are rate-limited) and is idempotent on `initialize_config` (skips it if the `Config` account already exists on-chain).
+- **Real devnet demo:** `programs/truststake/examples/devnet_demo.rs` — walks two marketplaces (v2's SPL-token collateral, not v1's native SOL) sharing one seller's stake as real transactions: one stake, two independent permits, a withdrawal against the cap that succeeds next to one that is meant to fail, and a dispute proved through the Ed25519 precompile. Gated behind the `devnet_demo` Cargo feature; run with `cargo run --example devnet_demo --features devnet_demo` from `programs/truststake/`. The signing wallet must match `constants::INITIAL_ADMIN`. It funds several throwaway keypairs by direct transfer (not airdrop, since devnet airdrops are rate-limited) and is idempotent on `initialize_config` and the test mint it pins, reusing both from the existing `Config` account if one is already there. `tests/test_devnet_demo_parity.rs` proves the same instruction sequence against LiteSVM first, before any of it spends devnet SOL.
 - **Build:** `anchor build` (not plain `cargo build` — Solana programs need the SBF target, which `anchor build` invokes via `cargo build-sbf`).
 - **Deploy:** `anchor deploy` / `solana program deploy` — costs real devnet SOL (program rent-exemption is ~1.37 SOL for the current binary size). Check `solana balance --url devnet` first. If a deploy fails partway, check `solana program show --buffers --url devnet` before retrying — there may be a paid-for buffer account worth resuming from (`solana program deploy --buffer <address> ...`) instead of paying rent again from scratch.
 

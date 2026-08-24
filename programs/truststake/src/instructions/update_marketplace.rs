@@ -3,7 +3,7 @@ use anchor_lang::prelude::*;
 use crate::{
     constants::{MARKETPLACE_SEED, SEED_VERSION},
     events::MarketplaceUpdated,
-    state::{validate_marketplace_settings, Marketplace},
+    state::{validate_bond_bps, validate_complaint_window, Marketplace},
 };
 
 /// Accounts for [`handler`]. `seeds` re-derive the PDA from the loaded
@@ -30,6 +30,16 @@ pub struct UpdateMarketplaceAccountConstraints<'info> {
 /// receipts stay valid across a rotation (Phase 3's `raise_dispute`
 /// relies on this). Window and bond changes never touch permits already
 /// granted; those froze their own copies at grant time (Phase 2).
+///
+/// Only a field the caller actually supplied is validated. A stored value
+/// the caller left untouched is grandfathered rather than re-checked
+/// against today's bounds: if a later upgrade tightens `MAX_BOND_BPS`, a
+/// marketplace whose already-stored `bond_bps` falls outside the new range
+/// must still be able to call this handler to rotate an unrelated field,
+/// `receipt_signer` above all, during a key-compromise incident. Re-running
+/// both checks unconditionally would lock that marketplace out of its own
+/// emergency rotation until it first lowered a bond rate nobody asked it
+/// to touch.
 pub fn handler(
     ctx: Context<UpdateMarketplaceAccountConstraints>,
     new_receipt_signer: Option<Pubkey>,
@@ -39,11 +49,15 @@ pub fn handler(
 ) -> Result<()> {
     let marketplace = &mut ctx.accounts.marketplace;
 
-    let complaint_window = new_complaint_window.unwrap_or(marketplace.complaint_window);
-    let bond_bps = new_bond_bps.unwrap_or(marketplace.bond_bps);
-    validate_marketplace_settings(complaint_window, bond_bps)?;
-    marketplace.complaint_window = complaint_window;
-    marketplace.bond_bps = bond_bps;
+    if let Some(complaint_window) = new_complaint_window {
+        validate_complaint_window(complaint_window)?;
+        marketplace.complaint_window = complaint_window;
+    }
+
+    if let Some(bond_bps) = new_bond_bps {
+        validate_bond_bps(bond_bps)?;
+        marketplace.bond_bps = bond_bps;
+    }
 
     if let Some(receipt_signer) = new_receipt_signer {
         if receipt_signer != marketplace.receipt_signer {
