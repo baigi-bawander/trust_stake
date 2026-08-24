@@ -1,5 +1,10 @@
 # TrustStake v2: from prototype to protocol
 
+*Note, 2026-08-25: this is a design document, written before the v2 rebuild it specifies. It
+records intent, decisions and predictions made at the time; some of its forward-looking
+estimates differ from what was actually built. For current facts, see README.md,
+docs/TESTING.md and CLAUDE.md.*
+
 ## What TrustStake is
 
 A seller locks USDC into an account the program controls. For each marketplace they sell

@@ -42,10 +42,22 @@ jobs:
       - name: Cache Cargo registry, anchor-cli, and build output
         uses: actions/cache@v4
         with:
+          # actions/cache@v4 restores whatever ~/.cargo/bin/anchor was cached
+          # from a previous run, but cargo tracks what it installed in
+          # ~/.cargo/.crates.toml and ~/.cargo/.crates2.json, not by scanning
+          # bin/ for binaries that happen to be present. Without those two
+          # files restored alongside it, cargo has no record of having
+          # installed anchor, so on a cache hit the `cargo install anchor-cli`
+          # step below refuses with "binary `anchor` already exists in
+          # destination" instead of no-op'ing as intended. The metadata has
+          # to travel with the binary it describes, so both join
+          # ~/.cargo/bin/anchor in the path list below.
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             ~/.cargo/bin/anchor
+            ~/.cargo/.crates.toml
+            ~/.cargo/.crates2.json
             ~/.cache/solana
             target
           # anchor-cli's pinned version is part of the key so a future

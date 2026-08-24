@@ -5,14 +5,14 @@ Staked reputation for peer-to-peer marketplaces on Solana. Full pitch, architect
 ## Current state (update this section when it changes)
 
 - **Stage:** working prototype, submitted as an Edversity/Superteam Pakistan capstone. Devnet
-  now runs the `v2-rebuild` binary, not `main`'s; see "v2 rebuild in progress" below.
+  runs `main`'s binary, now v2; see "The v2 rebuild" below.
 - **Deployed:** devnet, program ID `3Vc6M8Az9h2GtDmqqhQKURqTKKygNfekQq7PoJris6V2`. Upgraded in
-  place to the v2-rebuild binary on 2026-08-24 (data length 649,264 bytes, deployed in slot
-  487349484). v1 no longer exists at this address; v1's own transaction history stays valid on
-  Solana Explorer regardless, since upgrading a program does not change chain history.
-- **Tests:** v2-rebuild has 132 tests passing (`cargo test` from `programs/truststake/`,
-  LiteSVM), plus a real devnet run with every signature recorded in
-  [docs/TESTING.md](docs/TESTING.md). `main`'s own suite is the original 3/3.
+  place to v2 on 2026-08-24 (data length 649,264 bytes, deployed in slot 487349484). v1 no
+  longer exists at this address; v1's own transaction history stays valid on Solana Explorer
+  regardless, since upgrading a program does not change chain history.
+- **Tests:** `main` has 132 tests passing (`cargo test` from `programs/truststake/`, LiteSVM),
+  plus a real devnet run with every signature recorded in
+  [docs/TESTING.md](docs/TESTING.md).
 - **Repo:** `https://github.com/baigi-bawander/trust_stake`
 - **Upgrade authority / admin wallet:** `~/.config/solana/id.json` (pubkey
   `EE4skmuEcaL4ybktFhp7sUfr84to78KQKoNsAAu8L7jG`) is simultaneously the program's upgrade
@@ -30,14 +30,11 @@ Concretely:
 - The one ask: when you change something on this list, **update this file and the matching section of README.md** ("Current tradeoffs") to reflect the new reality. The failure mode this file exists to prevent is documentation quietly going stale — not change itself.
 - If you're not sure whether something is a deliberate tradeoff or an actual bug, the README's "Current tradeoffs" section and the git history are the sources of truth — check there before assuming either way.
 
-## v2 rebuild in progress
+## The v2 rebuild
 
-The list below describes `main`, the deployed prototype. A ground-up rebuild is underway on
-branch `v2-rebuild` (multi-tenant, SPL-token collateral, unstaking, no single arbiter) and
-several items below no longer apply there. See `docs/DESIGN-v2.md` for what's actually
-happening on that branch. This section and the rest of this file get rewritten together once
-that branch lands, per Phase 4 of that doc's build order — not incrementally per phase, so it
-doesn't get rewritten three times while the architecture is still moving.
+`main` is v2: a ground-up rebuild that replaced the original single-arbiter, native-SOL
+prototype with a multi-tenant protocol (SPL-token collateral, unstaking, no single arbiter).
+`docs/DESIGN-v2.md` has the full design rationale and build order behind that rebuild.
 
 **v2 is deployed to devnet**, at the program ID above. `Config` is initialized (chain_id 1, a
 demo-created 6-decimal test mint), and two marketplaces, one stake, two permits and one
@@ -45,14 +42,14 @@ resolved dispute exist as real state from `examples/devnet_demo.rs`. This is sti
 mainnet: a change that breaks an account layout means a fresh deploy and a fresh demo run, not
 a production migration.
 
-**Build and test on this branch:** `anchor build`, then `OPENSSL_NO_VENDOR=1 cargo test` from
+**Build and test:** `anchor build`, then `OPENSSL_NO_VENDOR=1 cargo test` from
 `programs/truststake/`. The env var is required in this environment; without it the vendored
 OpenSSL build fails on a clock-skew check. LiteSVM loads the pre-built
 `target/deploy/truststake.so` rather than the native test binary, so any handler change needs
 `anchor build` before the tests reflect it. A `build.rs` guard fails the compile if that
 `.so` is stale. Current state is 132 tests, all passing.
 
-### Deliberate tradeoffs on v2-rebuild, not bugs
+### Deliberate tradeoffs on v2, not bugs
 
 `docs/DESIGN-v2.md` has an "Honest limitations" section with twelve entries, plus numbered
 design decisions. Those are considered and recorded, not oversights. Read them before
@@ -73,19 +70,24 @@ reporting anything as a defect. The five most often mistaken for bugs:
   equality let anyone brick a seller's vault by donating one token unit into it. The
   dangerous direction, a vault holding less than its ledger, is still caught.
 
-### Review history on v2-rebuild
+### Review history on v2
 
 Phases 1, 2 and 3 have each had their own security review, and the dispute lifecycle has had
 two dedicated passes including one adversarial pass that executed real exploit probes. The
 weak spot has consistently been **cross-phase interaction**, which phase-scoped review cannot
-see. Three of the worst bugs found so far lived there, all fixed: a permit released and
+see. Four of the worst bugs found so far lived there, all fixed: a permit released and
 re-granted at the same address (Phase 2) interacting with a receipt's replay guard (Phase 3),
 which produced an actual double-slash of seller funds; a PDA seed that did not name every
 identity it was the sole guard for, which permanently locked a buyer out of ever filing a
-complaint; and `SlashPermit` carrying no field naming which era granted it, so a receipt from
+complaint; `SlashPermit` carrying no field naming which era granted it, so a receipt from
 a fully wound-down era could be filed against whatever got granted next at the same address —
-fixed by `granted_at` and a bound in `raise_dispute` (docs/DESIGN-v2.md, check 7). Assume a
-fourth of the same kind exists until you have checked.
+fixed by `granted_at` and a bound in `raise_dispute` (docs/DESIGN-v2.md, check 7); and
+`release_permit_early` allowing a revoked permit to be released immediately, with no minimum
+wait, so a permit could be wound down and a new one granted at the same address inside the
+clock-skew tolerance `raise_dispute`'s check 7 depends on, fixed by requiring
+`now >= permit.revoked_at + CLOCK_SKEW_TOLERANCE_SECONDS`, deliberately reusing check 7's own
+constant since the two are one guarantee split across two handlers. Assume a fifth of the same
+kind exists until you have checked.
 
 ## Deliberate simplifications, as of now
 
