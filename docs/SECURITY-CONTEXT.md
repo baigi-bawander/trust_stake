@@ -37,9 +37,16 @@ Three dependency facts carry security weight:
 - **`anchor-spl` carries `token_2022`** because its `idl-build` does not compile without it,
   not because the program uses Token Extensions.
 
-There is no CI configuration in the repository. Nothing runs the suite except a person
-typing `cargo test`, and TESTING.md's warning that a stale `.so` makes the suite pass
-against the previous program has no automated backstop.
+`.github/workflows/ci.yml` runs `anchor build`, `cargo check --tests` and `cargo clippy
+--tests` on every push and pull request; it deliberately does not run `cargo test`, since
+every test in the suite depends on `initialize_config` accepting the signer hardcoded as
+`INITIAL_ADMIN`, the real deploy wallet's key, and TESTING.md's "Continuous integration"
+section lays out at length why that key does not belong in CI. That coverage does close
+TESTING.md's warning that a stale `.so` makes the suite pass against the previous program:
+`cargo check --tests` runs `programs/truststake/build.rs`, which fails the build outright
+if `target/deploy/*.so` is older than the source that built it. It proves nothing about
+behaviour, though. A weakened check or a loosened comparison is still caught only by a
+person running `cargo test` locally before merging.
 
 ## Account model and the PDA graph
 
@@ -55,7 +62,7 @@ so they cannot collide with the deployed v1 layout.
   `committed`, with `stake_vault` at `["vault", "v2", seller]` under its authority.
 - `SlashPermit` at `["permit", "v2", seller, marketplace]`: the seller's line of credit to
   one marketplace, with money terms frozen at grant.
-- `DisputeRecord` at `["dispute", "v2", marketplace, order_id]`: one complaint. Its
+- `DisputeRecord` at `["dispute", "v2", marketplace, seller, order_id]`: one complaint. Its
   existence is the replay guard.
 - `bond_vault` at `["bonds", "v2", marketplace]`: one shared pool per marketplace, holding
   every live bond, under the `Marketplace` PDA's authority.
@@ -210,8 +217,11 @@ build vary; local sampling across dozens of runs measured as low as 42,318 and a
    pubkey, `collateral_mint` and `chain_id` are unchangeable after `initialize_config`, and
    the upgrade authority is whatever the deploy set. A wrong value in any of them is a
    redeploy, not a fix.
-5. **The absence of CI.** Nothing prevents a stale `.so` from being tested against, which is
-   the failure mode TESTING.md calls out as biting hardest exactly here.
+5. **What CI does not cover.** `.github/workflows/ci.yml` now catches a stale `.so` and a
+   compile or clippy regression, but it does not run `cargo test`, on purpose (see "Stack
+   and dependencies" above), so nothing automated catches a behavioural regression, a
+   weakened check or a loosened comparison. That is still caught only by a person running
+   the suite locally before merging.
 
 ## Open questions for the next reader
 

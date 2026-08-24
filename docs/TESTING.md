@@ -410,10 +410,10 @@ one has a hard ceiling and needs a real test.
   searches for its canonical bump onchain, and one of that PDA's seeds is the seller's
   freshly generated pubkey, so the number of search attempts (and therefore the compute
   cost) varies from one buyer/seller pair to the next. Phase 3 recorded a single run at
-  42,229 CU as if it were a constant; repeated Phase 4 runs against the same build ranged
-  from 42,318 to 51,318 CU. Either figure sits far below the 200,000 default budget. If a
-  run comes in near the budget, something is wrong with an assumption rather than with the
-  budget.
+  42,229 CU as if it were a constant; repeated sampling against the same build measured as
+  low as 42,318 CU and as high as 58,818 CU. Both figures sit far under the 200,000 default
+  budget, so no safety conclusion changes at either end. If a run comes in near the budget,
+  something is wrong with an assumption rather than with the budget.
 - `test_raise_dispute_stack_frame`: the account struct must not blow the 4KB stack frame.
   Box the cold-path accounts. This shows up as a build warning rather than a test failure,
   so check for it explicitly.

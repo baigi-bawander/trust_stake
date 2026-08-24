@@ -11,13 +11,13 @@ program in LiteSVM, not inferred from reading. The proofs were run and then dele
 than committed, because a test that asserts today's broken behaviour would have to be
 rewritten by whoever fixes it; the code to reproduce each one is inline here.
 
-**Totals:** 4 findings. 1 High, 3 Low. No theft path was found: no finding lets an attacker
-take a token that is not theirs, and every one of the design's stated protections held under
-the attacks written against it in Phase 3.
+**Totals:** 4 findings. 1 High (resolved 2026-08-25), 3 Low. No theft path was found: no
+finding lets an attacker take a token that is not theirs, and every one of the design's
+stated protections held under the attacks written against it in Phase 3.
 
 ---
 
-## TS-31 (High): one minor unit of USDC permanently freezes a seller's collateral
+## TS-31 (High, RESOLVED 2026-08-25): one minor unit of USDC permanently freezes a seller's collateral
 
 **Location:** `instructions/add_stake.rs:78`, `instructions/withdraw_stake.rs:92`,
 `instructions/resolve_dispute.rs:222`, all three via the same convention.
@@ -78,6 +78,12 @@ Donated dust would then sit in the vault unowned. If that is worth reclaiming, a
 permissionless `sync_stake` that raises `staked` to the vault balance sweeps it to the seller
 and is safe on its own terms, since it only ever increases `staked` and `committed <= staked`
 is preserved. That is a second instruction and a Phase 4 decision; the `>=` change is not.
+
+**Resolution (2026-08-25).** Fixed. `instructions/add_stake.rs:82` and
+`instructions/withdraw_stake.rs:96` now use `require_gte!` in place of the exact-equality
+check this finding describes, and `error.rs`'s `ConservationViolation` message now reads
+"Vault balance is below the recorded ledger," which only makes sense against a `>=` bound.
+The donation under "Reproduction" above no longer freezes anything.
 
 ---
 

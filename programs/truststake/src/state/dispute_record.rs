@@ -14,7 +14,7 @@ pub enum DisputeStatus {
     Abandoned = 4,
 }
 
-/// An open or resolved complaint (`["dispute", "v2", marketplace,
+/// An open or resolved complaint (`["dispute", "v2", marketplace, seller,
 /// order_id]`), created by `raise_dispute` and deleted by `close_dispute`
 /// once its receipt is too old to reuse. The account's existence is also
 /// the replay guard: a second complaint against the same order collides
