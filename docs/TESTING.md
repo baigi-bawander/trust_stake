@@ -422,6 +422,66 @@ one has a hard ceiling and needs a real test.
 
 ---
 
+## What the devnet run proved
+
+LiteSVM proves the logic is correct. The signatures below prove the same logic runs on a
+real cluster: real accounts, real rent, a real Ed25519 precompile, and a real program that
+other transactions could interfere with if a check were missing. Recorded from the v2 binary
+deployed 2026-08-24 at `3Vc6M8Az9h2GtDmqqhQKURqTKKygNfekQq7PoJris6V2`, run with `cargo run
+--example devnet_demo --features devnet_demo --manifest-path programs/truststake/Cargo.toml`.
+
+Funding, four throwaway wallets by direct transfer rather than airdrop, since devnet
+airdrops are rate-limited:
+
+- Fund seller: `5MnqTARF5GbBj4PisGRKccCD1iX5Yjbixpp3ihX6Svd6K25NhgfKPZFgvwXeBV2wHay5VW47yD2fYYw1FT5we5ru` -- [Explorer](https://explorer.solana.com/tx/5MnqTARF5GbBj4PisGRKccCD1iX5Yjbixpp3ihX6Svd6K25NhgfKPZFgvwXeBV2wHay5VW47yD2fYYw1FT5we5ru?cluster=devnet)
+- Fund buyer: `5beHLpzw8zhCeAdUoSQ2XWtgz59Ku78A4MmT9zS6z8dQZtxfzohiCyWiKwyuHoGRHEQGCJo7Cb98ySgdoRr44WfB` -- [Explorer](https://explorer.solana.com/tx/5beHLpzw8zhCeAdUoSQ2XWtgz59Ku78A4MmT9zS6z8dQZtxfzohiCyWiKwyuHoGRHEQGCJo7Cb98ySgdoRr44WfB?cluster=devnet)
+- Fund CashDesk authority: `4Ng9NT52bK4fLe2ydcwkzD8scxLWHMmRvUWZs18Bv9zMqnqWc65ta83ErnZSCVBG8BYsst5XDU5o1B5qKH89QqN7` -- [Explorer](https://explorer.solana.com/tx/4Ng9NT52bK4fLe2ydcwkzD8scxLWHMmRvUWZs18Bv9zMqnqWc65ta83ErnZSCVBG8BYsst5XDU5o1B5qKH89QqN7?cluster=devnet)
+- Fund PixelBazaar authority: `4oqRwemQzR7NVfd3VdEzFETTWwvbzFZDjp4sr8YbQZLQUYTLaD5qnYZNPDUue4ECb7JH1mt7EGoFk31NaZZhys27` -- [Explorer](https://explorer.solana.com/tx/4oqRwemQzR7NVfd3VdEzFETTWwvbzFZDjp4sr8YbQZLQUYTLaD5qnYZNPDUue4ECb7JH1mt7EGoFk31NaZZhys27?cluster=devnet)
+
+Step 1, test mint and starting balances:
+
+- Create test mint: `49bkViEvy3VEbFBSxLf4gi4KbwYdroqawXLqDFUKpv39eZ7sY2GfaEJApNwdrp1UMAiHFavv3L6tGmNsfMrVSKvt` -- [Explorer](https://explorer.solana.com/tx/49bkViEvy3VEbFBSxLf4gi4KbwYdroqawXLqDFUKpv39eZ7sY2GfaEJApNwdrp1UMAiHFavv3L6tGmNsfMrVSKvt?cluster=devnet). A fresh 6-decimal Classic Token Program mint, created live, standing in for USDC.
+- Create seller token account: `5EKMTaXrQzpQfw6cLdAaLCx4ZLauqMPyqCujQVwRuScGRTQJWpVUkw6y1ExN6276Nmytwh1HzArYHeLf9siHfeD7` -- [Explorer](https://explorer.solana.com/tx/5EKMTaXrQzpQfw6cLdAaLCx4ZLauqMPyqCujQVwRuScGRTQJWpVUkw6y1ExN6276Nmytwh1HzArYHeLf9siHfeD7?cluster=devnet)
+- Create buyer token account: `4awnbbV2Mejj3eNAFGnKNkbp7oeHEwwhEYrUS4dippMC7rbcsQrASde9ZysqcoKAKZ5zQbTJVxoQHNA5Sdi62JEP` -- [Explorer](https://explorer.solana.com/tx/4awnbbV2Mejj3eNAFGnKNkbp7oeHEwwhEYrUS4dippMC7rbcsQrASde9ZysqcoKAKZ5zQbTJVxoQHNA5Sdi62JEP?cluster=devnet)
+- Mint 500.000000 to seller: `31GUbpbxmZqRjfE48pUnA6jZP5UXKXsJGLEUKJRhMdUxf2yy1Vc1sUAMoEU8iCqBXMDAZRhkQufgCmtTkAg2GWVK` -- [Explorer](https://explorer.solana.com/tx/31GUbpbxmZqRjfE48pUnA6jZP5UXKXsJGLEUKJRhMdUxf2yy1Vc1sUAMoEU8iCqBXMDAZRhkQufgCmtTkAg2GWVK?cluster=devnet)
+- Mint 10.000000 to buyer: `Qh1gt5uenKHG9CazRNF1WiBXUrSBYkhG2i8n6NRB3AoqbZYsAswqJtX3j3RPDWJFB6Dxb53GsrQoM9Vu5X7L2SZ` -- [Explorer](https://explorer.solana.com/tx/Qh1gt5uenKHG9CazRNF1WiBXUrSBYkhG2i8n6NRB3AoqbZYsAswqJtX3j3RPDWJFB6Dxb53GsrQoM9Vu5X7L2SZ?cluster=devnet)
+
+Step 2, `initialize_config`:
+
+- `aUUkdmEB6cQwKvJWN7Z7FnE5omKJgjRSaHaLkGWNwYT9jxQUoKtdJVxPr5e8mU6z8Hpdr5nYvx4kgCG4WJ3pTsr` -- [Explorer](https://explorer.solana.com/tx/aUUkdmEB6cQwKvJWN7Z7FnE5omKJgjRSaHaLkGWNwYT9jxQUoKtdJVxPr5e8mU6z8Hpdr5nYvx4kgCG4WJ3pTsr?cluster=devnet). Signed by `INITIAL_ADMIN`, pins `chain_id = 1` and the mint above into `Config`, permanently. Proves the front-running guard accepts the right signer, since it is the only signer that could have gotten this far.
+
+Step 3, two marketplaces registered against the same seller's future collateral:
+
+- `register_marketplace(CashDesk, window = 2 days, bond = 1000 bps)`: `2M9rFrGmXkTtRZyybnf4GV6wgiH6iGKWmCUnimrvriMr4akwQGEYqsasQaGzjTyLZgBXipxk8NkDJXVHbLvLWbtR` -- [Explorer](https://explorer.solana.com/tx/2M9rFrGmXkTtRZyybnf4GV6wgiH6iGKWmCUnimrvriMr4akwQGEYqsasQaGzjTyLZgBXipxk8NkDJXVHbLvLWbtR?cluster=devnet)
+- `register_marketplace(PixelBazaar, window = 7 days, bond = 500 bps)`: `2hpSwpEaX3SP5Y5wzDKXUia9EDPhmmE5p1CT1xdmsPsoABVLjjZ1WWGA5D5iuEarJ1aAhtiD4xDHvVAyFMXpdpAH` -- [Explorer](https://explorer.solana.com/tx/2hpSwpEaX3SP5Y5wzDKXUia9EDPhmmE5p1CT1xdmsPsoABVLjjZ1WWGA5D5iuEarJ1aAhtiD4xDHvVAyFMXpdpAH?cluster=devnet). Two marketplaces with different windows and bond rates coexist without interfering, setting up Step 5's proof that they draw from one shared stake independently.
+
+Step 4, the seller locks 500.000000 of collateral once:
+
+- `initialize_stake`: `2UXxHR9owXibjH5Qb7FVrtehNbDkHdFErADtmqX33NUREf34ykz9UvJaouRNSrbyy4G3ZYvFswGz9QhLqLZ48pLL` -- [Explorer](https://explorer.solana.com/tx/2UXxHR9owXibjH5Qb7FVrtehNbDkHdFErADtmqX33NUREf34ykz9UvJaouRNSrbyy4G3ZYvFswGz9QhLqLZ48pLL?cluster=devnet)
+- `add_stake(500.000000)`: `K3m4V74oUVxWD5ZeAxaqzQydtDo77ASXqbPUcH73kMdAJWuDaxmGXJAAya19GhMppcaWBuzAxZjAEoRiX73ApAV` -- [Explorer](https://explorer.solana.com/tx/K3m4V74oUVxWD5ZeAxaqzQydtDo77ASXqbPUcH73kMdAJWuDaxmGXJAAya19GhMppcaWBuzAxZjAEoRiX73ApAV?cluster=devnet)
+
+Step 5, the seller grants each marketplace its own permit from the same stake:
+
+- `grant_permit(CashDesk, 200.000000)`: `2LSXSXPrK9qj45GDTkgaJouuLg3Y3vxTcfYdwViNT7erxoUWcvoz367G4YFKcY7kw9MjbWgKW1EuNksidhvuNMCE` -- [Explorer](https://explorer.solana.com/tx/2LSXSXPrK9qj45GDTkgaJouuLg3Y3vxTcfYdwViNT7erxoUWcvoz367G4YFKcY7kw9MjbWgKW1EuNksidhvuNMCE?cluster=devnet)
+- `grant_permit(PixelBazaar, 200.000000)`: `KDXDkVZpM8NhhdBpDRoTVVy92cHWHma9GJ7BSkb1o67DPHdVbUJBY9T4VdLHxwvbw3gofV36CGYHJzybe1B4TmA` -- [Explorer](https://explorer.solana.com/tx/KDXDkVZpM8NhhdBpDRoTVVy92cHWHma9GJ7BSkb1o67DPHdVbUJBY9T4VdLHxwvbw3gofV36CGYHJzybe1B4TmA?cluster=devnet). `SellerStake.committed` reaches 400.000000 of 500.000000 staked, live confirmation of `test_marketplace_cannot_exceed_staked`'s LiteSVM result.
+
+Step 6, a withdrawal that must succeed next to one that must fail:
+
+- `withdraw_stake(100.000000)`, succeeds: `2Jj66mdDK4trFoNhiXUXbq7Ne5rNoPY6o9d4PhL5TkqfS66krXV7Si6Mx26itLTMV5VdSjNoq6JD2BDAD6sAL2yg` -- [Explorer](https://explorer.solana.com/tx/2Jj66mdDK4trFoNhiXUXbq7Ne5rNoPY6o9d4PhL5TkqfS66krXV7Si6Mx26itLTMV5VdSjNoq6JD2BDAD6sAL2yg?cluster=devnet). 500.000000 - 100.000000 = 400.000000, exactly the committed floor.
+- `withdraw_stake(50.000000)`, must fail: `o5d8SVygiNdaFihiEpnsrLkQ1eNYDLdYUd5mv2yEDXSY6s41vN83Ev1cS1jw1tW9dwVZJshTy38PRy3BH4Tod2A` -- [Explorer](https://explorer.solana.com/tx/o5d8SVygiNdaFihiEpnsrLkQ1eNYDLdYUd5mv2yEDXSY6s41vN83Ev1cS1jw1tW9dwVZJshTy38PRy3BH4Tod2A?cluster=devnet). Confirmed independently with `solana confirm -v`, not taken from the demo's own report: landed in slot 487357460, charged the standard fee, consumed 11,010 of 200,000 compute units, and the program log reads `AnchorError thrown in programs/truststake/src/instructions/withdraw_stake.rs:70. Error Code: CommittedExceedsStaked. Error Number: 6007`, failing with `custom program error: 0x1777`. Landing in a slot and consuming compute rules out a client preflight rejection; this is `test_seller_cannot_withdraw_committed` failing onchain, inside the real program, not in a wallet's local simulation.
+
+Step 7, a buyer disputes a CashDesk order:
+
+- Ed25519 verify plus `raise_dispute`: `27btakDNBbNzbJHzXjM8EWfL5WncfK9AeT1DLpPact9ZhQYdy151hugCftg4obTTREGTRDVMmWWCwRGGufeAH6jU` -- [Explorer](https://explorer.solana.com/tx/27btakDNBbNzbJHzXjM8EWfL5WncfK9AeT1DLpPact9ZhQYdy151hugCftg4obTTREGTRDVMmWWCwRGGufeAH6jU?cluster=devnet). A real Ed25519 signature over a real `OrderReceipt` is verified by Solana's precompile in the same transaction, then read back by introspection exactly as `test_introspection_rejects_crossed_indices` and its neighbors assume a well-formed instruction looks. This is the one check LiteSVM approximates and a live cluster runs for real.
+- `resolve_dispute(upheld = true)`: `nwehecaQ3WVvUMFxexcmHxSYV5xExc9e4V4mHVNMBVArHZX32AkDpcGmZdzk2j3GKvrg5hrFnRF5jjius7Z2eif` -- [Explorer](https://explorer.solana.com/tx/nwehecaQ3WVvUMFxexcmHxSYV5xExc9e4V4mHVNMBVArHZX32AkDpcGmZdzk2j3GKvrg5hrFnRF5jjius7Z2eif?cluster=devnet). The buyer is paid from the seller's collateral. CashDesk's permit ends at cap 200.000000, slashed 80.000000, remaining 120.000000; PixelBazaar's sibling permit stays untouched at 200.000000 remaining, live confirmation that two permits against the same stake are tracked independently.
+
+The walk stops after Step 7. `release_permit` needs `revoked_at + complaint_window` to elapse
+(at least `MIN_COMPLAINT_WINDOW_SECONDS`, 2 days) and `release_permit_early` needs
+`CLOCK_SKEW_TOLERANCE_SECONDS`, one hour, after revocation; neither fits inside one run of this
+script. Both are exercised in `tests/test_phase2.rs` instead.
+
+---
+
 ## Regression coverage against the audit
 
 Every critical and high finding from [AUDIT-v2-FINDINGS.md](AUDIT-v2-FINDINGS.md) needs a
