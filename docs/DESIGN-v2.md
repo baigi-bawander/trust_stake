@@ -187,6 +187,20 @@ Each of these is a decision with a reason, not an oversight.
   boundary because it was signed during wind-down," which check 7 cannot do from the receipt
   alone. A marketplace that stops signing receipts against a permit the instant it revokes it
   never triggers this at all.
+- **A tightened protocol bound does not retroactively apply to marketplaces registered under
+  the old one.** `grant_permit` reads `complaint_window` and `bond_bps` straight off the
+  stored `Marketplace` account and never re-checks them against
+  `MIN_COMPLAINT_WINDOW_SECONDS`, `MAX_COMPLAINT_WINDOW_SECONDS` or `MAX_BOND_BPS` as they
+  stand today; `validate_marketplace_settings` only ever runs once, at `register_marketplace`.
+  If a future release moves either constant, a marketplace registered under the old bounds
+  keeps granting permits at its grandfathered values, and because `update_marketplace`
+  validates only whichever field the caller actually supplies, that marketplace can still
+  raise its bond without ever being forced to bring its window inside the new range. Not
+  fixed, on purpose: adding the bounds check to `grant_permit` instead would not remove the
+  grandfathering, only move which handler enforces it, and would start locking a marketplace
+  that registered in good faith out of granting any new permit at all the day the bound
+  moves. Tightening a bound is a migration, not a constant edit, and needs its own plan for
+  what happens to the marketplaces it leaves outside the new range.
 
 ---
 

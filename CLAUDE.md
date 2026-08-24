@@ -26,9 +26,9 @@ This is a prototype, not a finished product — nothing here is final, and impro
 
 Concretely:
 
-- The list below ("Deliberate simplifications") describes the *current* tradeoffs and the reasoning behind each. Treat that reasoning as context to weigh, not a rule that blocks work — if a task calls for building real DAO-based arbitration, or adding unstaking, or switching to USDC, go ahead.
-- The one ask: when you change something on this list, **update this file and the matching section of README.md** ("Prototype scope") to reflect the new reality. The failure mode this file exists to prevent is documentation quietly going stale — not change itself.
-- If you're not sure whether something is a deliberate tradeoff or an actual bug, the README's "Prototype scope" section and the git history are the sources of truth — check there before assuming either way.
+- The list below ("Deliberate simplifications") describes the *current* tradeoffs and the reasoning behind each. Treat that reasoning as context to weigh, not a rule that blocks work — if a task calls for building real DAO-based arbitration, storing buyer reputation onchain, or turning on a leverage multiplier, go ahead.
+- The one ask: when you change something on this list, **update this file and the matching section of README.md** ("Current tradeoffs") to reflect the new reality. The failure mode this file exists to prevent is documentation quietly going stale — not change itself.
+- If you're not sure whether something is a deliberate tradeoff or an actual bug, the README's "Current tradeoffs" section and the git history are the sources of truth — check there before assuming either way.
 
 ## v2 rebuild in progress
 
@@ -89,11 +89,14 @@ fourth of the same kind exists until you have checked.
 
 ## Deliberate simplifications, as of now
 
-- **Single arbiter key** (`resolve_dispute` only accepts one hardcoded authority via `Config`). A real deployment needs a multisig or DAO vote — this was scoped down for a testable MVP within a hackathon timeframe, not because multi-party arbitration is hard to justify.
-- **Native SOL, not a stablecoin.** Avoids token-account plumbing. USDC is the more realistic asset for real sellers.
-- **One open dispute per buyer/seller pair**, no appeals, no expiry, no partial refunds.
-- **No unstaking instruction** — a seller with a clean record can't withdraw collateral yet.
-- **No frontend.** The mechanism is demonstrated via tests and the devnet demo script, not a UI.
+- **No independent arbitration; each marketplace's own arbiter judges its own disputes**, up to the seller's permit cap. The arbiter is checked only as "is this the expected signer," never assumed to be a wallet, so a future jury program's PDA can occupy the slot with no change to this program; because terms are frozen per permit, that migration can happen one seller at a time.
+- **No buyer reputation stored onchain.** A buyer identity costs nothing to abandon; buyer history is computable from `DisputeRaised`/`DisputeResolved`/`DisputeExpired` events instead of read from account state.
+- **No identity or KYC data, anywhere in the design.** Everything written to Solana is public and permanent; verification stays inside a marketplace's own systems.
+- **No leverage multiplier.** Backing above collateral is only safe once reputation is expensive to fabricate, which it currently is not.
+- **A permit caps total damage across every buyer on one marketplace, not per-buyer coverage**; keeping order volume in line with a seller's live permit is left to the marketplace, published as an integration requirement.
+- **No appeals, no partial refunds, no protocol fee, no frontend.**
+
+See `docs/DESIGN-v2.md`, "What this design deliberately does not do" and "Honest limitations, stated rather than papered over," for the full list and the reasoning behind each; those two sections and this one and README.md's "Current tradeoffs" go stale together and get updated together.
 
 ## Working in this repo
 
