@@ -119,6 +119,87 @@ See `docs/DESIGN-v2.md`, "What this design deliberately does not do" and "Honest
   that numbering in the IDL, so an outdated one mis-names every error and mis-decodes any
   instruction whose arguments changed.
 
+## Solana MCP server
+
+`.mcp.json` (commit 4d9a311) wires up an http MCP server named `solana` at
+`https://mcp.solana.com/mcp`, no auth. Five tools, all exercised against this repo on
+2026-08-27 rather than taken from their descriptions. What follows is the result of that,
+not a restatement of the catalogue.
+
+**Reach for it whenever** a question touches an Anchor API, a Solana runtime behaviour, a
+precompile or sysvar layout, or an SPL instruction — before answering from model memory.
+"Known gotchas," below, records that Anchor 1.0.x broke compatibility with 0.32 and that
+older tutorials are stale; this server is the fix for exactly that. It also indexes
+production program source, not just prose, which makes differential review possible: compare
+a mechanism here against how a shipped program solves it and investigate every divergence.
+
+- **`get_documentation`** — the most useful of the five. Required `section`: a source id or a
+  section id, string or array. Returns a whole corpus, so pull only what you need (50KB per
+  source, 200KB total).
+- **`Solana_Documentation_Search`** — required `query`. Semantic RAG, returns ranked chunks.
+  Cheap. Use for a narrow question or a specific error.
+- **`list_sections`** — no args, ~33KB. The catalogue. Only needed when hunting a source id
+  the list below doesn't already name.
+- **`Solana_Expert__Ask_For_Help`** — **redundant, don't use it.** The identical query string
+  through it and `Solana_Documentation_Search` returned the same twenty sources in the same
+  order, differing only in the third decimal of the similarity scores. It is the same
+  retrieval backend under a second name, and despite what the name suggests it synthesises no
+  answer — it returns raw chunks like the search tool does. One tool, use the search one.
+- **`program_autofixer`** — marginal here, and not part of any security argument. See below.
+
+### Source ids that matter for this repo
+
+Saves a 33KB `list_sections` call. All verified present.
+
+- `gh-sealevel-attacks` — the canonical taxonomy of Solana-specific exploit classes, each with
+  insecure/secure/recommended variants. **Our own cross-phase bugs fall inside it:** #1 and #3
+  are class 9 (closing accounts — revival after close), #2 is class 8 (PDA sharing — a seed
+  that doesn't name every identity it guards). Read this before any security pass; it names
+  the shapes we have been finding by hand.
+- `anchor-docs`, `gh-anchor` — Anchor 1.x canonical. Account constraints, and the constraint
+  *execution order* (`close` runs in the exit handler, after the handler body).
+- `gh-solana-sdk` — `ed25519-program` layout, sysvar helpers, the secp256k1 module's security
+  notes, which spell out the introspection checks a verifier must make.
+- `gh-simd` — SIMD-0152 is the precompile specification: `num_signatures`, the three
+  `*_instruction_index` fields, `0xFFFF` meaning "this instruction."
+- `gh-anchor-instruction-sysvar`, `gh-solana-ed25519-instruction`,
+  `gh-solana-transaction-introspection`, `gh-anchor-escrow-introspection` — four independent
+  takes on our exact receipt-verification pattern.
+- `gh-drift-protocol-v2` — a production ed25519 verifier (`sig_verification.rs`) to diff
+  `src/ed25519.rs` against.
+- `gh-litesvm` — our test harness. `gh-spl-token`, `gh-spl-token-2022` — our collateral.
+  `gh-idl-program` — onchain IDL storage, relevant to the IDL rule above.
+
+`src/ed25519.rs` was checked against SIMD-0152 and the SDK's security notes this way on
+2026-08-27: every attack vector those describe is closed. That is the first time our most
+exploitable surface was validated against the specification rather than against reviewers'
+reasoning. Re-run that comparison if the module changes.
+
+### `program_autofixer`, and why it is not evidence
+
+Required `code` (one file or concatenated modules as a string); optional `filename`,
+`framework`, `dismissed`. A per-file pass over all 33 `.rs` files here returned zero issues,
+independently corroborated: 27 `checked_*` call sites and no raw balance arithmetic; three
+`UncheckedAccount` fields all carrying `/// CHECK:`; every `init` either given `space` or a
+token account under the rule's own exception.
+
+It is a single-file static linter over a closed ruleset — no cross-file dataflow, no
+instruction-ordering model, no view of the state machine. A control run on deliberately
+broken code measured the ceiling: a handler with **no authorization check at all**, letting
+any caller reassign admin and drain the vault, was reported only as `low — AccountInfo opts
+out of typed validation`, while a missing `space` attribute was rated `high`. It checks
+shapes, not authority, ordering, or state. All four cross-phase bugs (see "Review history on
+v2") are strictly harder than the one it missed.
+
+So: optional shape check before committing program changes, nothing more. A clean run is
+never evidence in a cross-phase discussion and never shortens one. There is no dismissal
+ledger — nothing has ever been flagged to dismiss, and one would only invite treating its
+silence as assurance.
+
+**Third-party disclosure:** `program_autofixer` transmits the code passed to it to a
+third-party service. Acceptable here only because `baigi-bawander/trust_stake` is public and
+MIT-licensed. A private fork must not call it unmodified.
+
 ## Known gotchas hit while building this
 
 - **Anchor 1.0.x is a recent major version** with breaking changes from 0.32 (`CpiContext::new` takes a `Pubkey` now, not an `AccountInfo`; IDL handling changed). If you're referencing older Anchor examples/tutorials, expect some to be stale.
