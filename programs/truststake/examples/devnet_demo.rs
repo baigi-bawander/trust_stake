@@ -126,13 +126,16 @@ const DEVNET_CHAIN_ID: u8 = CHAIN_ID_DEVNET;
 const STAKE_AMOUNT: u64 = usdc(500);
 const CASHDESK_PERMIT: u64 = usdc(200);
 const PIXELBAZAAR_PERMIT: u64 = usdc(200);
-const TOTAL_COMMITTED: u64 = CASHDESK_PERMIT + PIXELBAZAAR_PERMIT;
-/// Succeeds: 500 - 100 = 400, exactly the committed floor (docs/DESIGN-v2.md,
-/// "withdraw_stake requires staked - amount >= committed").
-const WITHDRAW_AMOUNT: u64 = usdc(100);
-/// Attempted after the above: 400 - 50 = 350 < 400 committed, so this MUST
-/// fail. That is the point of step 6, not a mistake to fix.
-const WITHDRAW_ATTEMPT_TOO_MUCH: u64 = usdc(50);
+/// Step 6's amounts are derived from LIVE staked/committed at the moment
+/// the step runs, never from constants: `SellerStake::slash` moves staked
+/// and committed together, so a fresh-chain assumption ("committed is
+/// always 400") breaks the instant any dispute has ever been upheld
+/// against this seller -- which happened in the 2026-08-24 run, and on
+/// every later run that reaches Step 7. If free collateral (staked -
+/// committed) is below this floor, the step tops it up first, the same
+/// pattern 1.6 already uses, rather than skip the demonstration or risk a
+/// zero-amount withdrawal.
+const WITHDRAW_DEMO_MIN_FREE: u64 = usdc(20);
 const ORDER_AMOUNT: u64 = usdc(80);
 const CLAIM_AMOUNT: u64 = ORDER_AMOUNT;
 /// Comfortably covers the bond (10% of ORDER_AMOUNT = usdc(8)) with
@@ -518,8 +521,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     save_progress(&progress)?;
     println!();
 
-    // ==================== Step 4: seller stakes once ====================
-    println!("=== Step 4: seller locks {} of collateral, once ===", format_usdc(STAKE_AMOUNT));
+    // ==================== Step 4: seller stakes ====================
+    // "Tops up to" rather than "locks, once": a slash (Step 7, or a prior
+    // run's Step 7) reduces staked, and this target-based top-up is what
+    // makes a resumed run restore it rather than leave it short.
+    println!("=== Step 4: seller tops up staked collateral to {} ===", format_usdc(STAKE_AMOUNT));
     let stake = stake_pda(program_id, seller.pubkey());
     let stake_vault = stake_vault_pda(program_id, seller.pubkey());
     if client.get_account(&stake).is_err() {
@@ -577,25 +583,73 @@ fn main() -> Result<(), Box<dyn Error>> {
     ensure_permit(&chain, &seller, stake, cashdesk, CASHDESK_PERMIT, "CashDesk")?;
     ensure_permit(&chain, &seller, stake, pixelbazaar, PIXELBAZAAR_PERMIT, "PixelBazaar")?;
 
+    let cashdesk_permit_addr = permit_pda(program_id, seller.pubkey(), cashdesk);
+    let pixelbazaar_permit_addr = permit_pda(program_id, seller.pubkey(), pixelbazaar);
+    let cashdesk_permit_state = read_permit(&client, &cashdesk_permit_addr)?;
+    let pixelbazaar_permit_state = read_permit(&client, &pixelbazaar_permit_addr)?;
     let stake_state = read_seller_stake(&client, &stake)?;
+    // Each permit's REMAINING allowance (cap - slashed), read live, not the
+    // amount it was originally granted: a prior slash (Step 7, on an
+    // earlier run) leaves the grant amount unchanged but the remaining
+    // allowance lower, and `committed` (SellerStake) already tracks the
+    // remaining figure, not the granted one, so this breakdown must too or
+    // it wouldn't add back up to the number just printed.
     println!(
-        "committed = {} of {} staked ({} CashDesk + {} PixelBazaar)",
+        "committed = {} of {} staked ({} CashDesk remaining + {} PixelBazaar remaining)",
         format_usdc(stake_state.committed),
         format_usdc(stake_state.staked),
-        format_usdc(CASHDESK_PERMIT),
-        format_usdc(PIXELBAZAAR_PERMIT),
+        format_usdc(cashdesk_permit_state.max_slashable - cashdesk_permit_state.slashed),
+        format_usdc(pixelbazaar_permit_state.max_slashable - pixelbazaar_permit_state.slashed),
     );
     println!();
 
-    // ==================== Step 6: withdraw the free balance, then hit the cap ====================
-    println!("=== Step 6: withdraw the {} that is not committed to anyone (one-time demo) ===", format_usdc(WITHDRAW_AMOUNT));
+    // ==================== Step 6: withdraw free collateral, then hit the cap ====================
+    println!("=== Step 6: withdraw free collateral, then demonstrate the cap refuses more (one-time demo) ===");
     if get_bool(&progress, "step6_withdraw_demo_done") {
         println!("Already demonstrated in a previous run, skipping (re-demonstrating a one-time boundary proof is not meaningful).");
     } else {
+        let stake_state = read_seller_stake(&client, &stake)?;
+        let mut free = stake_state.staked.saturating_sub(stake_state.committed);
+        println!(
+            "  Live state: staked = {}, committed = {}, free = {}",
+            format_usdc(stake_state.staked),
+            format_usdc(stake_state.committed),
+            format_usdc(free)
+        );
+        if free < WITHDRAW_DEMO_MIN_FREE {
+            let shortfall = WITHDRAW_DEMO_MIN_FREE - free;
+            println!(
+                "  Free collateral {} is below the {} this demo needs; topping up by {} first.",
+                format_usdc(free),
+                format_usdc(WITHDRAW_DEMO_MIN_FREE),
+                format_usdc(shortfall)
+            );
+            top_up_token_balance(&client, &admin, &mint, &seller_token_account, shortfall)?;
+            let instruction = Instruction::new_with_bytes(
+                program_id,
+                &truststake::instruction::AddStake { amount: shortfall }.data(),
+                truststake::accounts::AddStakeAccountConstraints {
+                    seller: seller.pubkey(),
+                    stake,
+                    stake_vault,
+                    mint,
+                    seller_token_account,
+                    token_program: spl_token::ID,
+                    event_authority,
+                    program: program_id,
+                }
+                .to_account_metas(None),
+            );
+            let signature = send(&client, &[instruction], &seller.pubkey(), &[&seller])?;
+            print_step(&format!("add_stake({}) -- topping up free collateral for the withdraw demo", format_usdc(shortfall)), &signature);
+            free = WITHDRAW_DEMO_MIN_FREE;
+        }
+
+        let withdraw_amount = free / 2;
         {
             let instruction = Instruction::new_with_bytes(
                 program_id,
-                &truststake::instruction::WithdrawStake { amount: WITHDRAW_AMOUNT }.data(),
+                &truststake::instruction::WithdrawStake { amount: withdraw_amount }.data(),
                 truststake::accounts::WithdrawStakeAccountConstraints {
                     seller: seller.pubkey(),
                     stake,
@@ -609,26 +663,23 @@ fn main() -> Result<(), Box<dyn Error>> {
                 .to_account_metas(None),
             );
             let signature = send(&client, &[instruction], &seller.pubkey(), &[&seller])?;
-            print_step(
-                &format!(
-                    "withdraw_stake({}) -- succeeds: {} - {} >= {} committed",
-                    format_usdc(WITHDRAW_AMOUNT),
-                    format_usdc(STAKE_AMOUNT),
-                    format_usdc(WITHDRAW_AMOUNT),
-                    format_usdc(TOTAL_COMMITTED)
-                ),
-                &signature,
-            );
+            print_step(&format!("withdraw_stake({}) -- succeeds: free collateral was {}", format_usdc(withdraw_amount), format_usdc(free)), &signature);
         }
 
+        let stake_after_first = read_seller_stake(&client, &stake)?;
+        let free_after = stake_after_first.staked.saturating_sub(stake_after_first.committed);
+        let withdraw_attempt_too_much = free_after + 1;
         println!(
-            "Attempting to withdraw another {}, which the cap must refuse...",
-            format_usdc(WITHDRAW_ATTEMPT_TOO_MUCH)
+            "  After that withdrawal: staked = {}, committed = {}, free = {}. Attempting to withdraw {}, which the cap must refuse...",
+            format_usdc(stake_after_first.staked),
+            format_usdc(stake_after_first.committed),
+            format_usdc(free_after),
+            format_usdc(withdraw_attempt_too_much)
         );
         {
             let instruction = Instruction::new_with_bytes(
                 program_id,
-                &truststake::instruction::WithdrawStake { amount: WITHDRAW_ATTEMPT_TOO_MUCH }.data(),
+                &truststake::instruction::WithdrawStake { amount: withdraw_attempt_too_much }.data(),
                 truststake::accounts::WithdrawStakeAccountConstraints {
                     seller: seller.pubkey(),
                     stake,
@@ -647,7 +698,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             // merely rejected by client-side preflight simulation before
             // anything was spent.
             let (signature, outcome) = send_allowing_failure(&client, &[instruction], &seller.pubkey(), &[&seller])?;
-            print_step(&format!("withdraw_stake({}) -- must fail", format_usdc(WITHDRAW_ATTEMPT_TOO_MUCH)), &signature);
+            print_step(&format!("withdraw_stake({}) -- must fail", format_usdc(withdraw_attempt_too_much)), &signature);
             match outcome {
                 Some(TransactionError::InstructionError(_, InstructionError::Custom(code)))
                     if code == u32::from(TrustStakeError::CommittedExceedsStaked) =>

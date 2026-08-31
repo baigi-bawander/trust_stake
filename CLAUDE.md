@@ -20,7 +20,7 @@ Staked reputation for peer-to-peer marketplaces on Solana. Full pitch, architect
   under the old binary are still read correctly by this one. v1 no longer exists at this
   address; v1's own transaction history stays valid on Solana Explorer regardless, since
   upgrading a program does not change chain history.
-- **Tests:** `main` has 151 tests passing (`cargo test` from `programs/truststake/`, LiteSVM),
+- **Tests:** `main` has 152 tests passing (`cargo test` from `programs/truststake/`, LiteSVM),
   plus a real devnet run with every signature recorded in
   [docs/TESTING.md](docs/TESTING.md).
 - **Repo:** `https://github.com/baigi-bawander/trust_stake`
@@ -57,7 +57,7 @@ a production migration.
 OpenSSL build fails on a clock-skew check. LiteSVM loads the pre-built
 `target/deploy/truststake.so` rather than the native test binary, so any handler change needs
 `anchor build` before the tests reflect it. A `build.rs` guard fails the compile if that
-`.so` is stale. Current state is 151 tests, all passing.
+`.so` is stale. Current state is 152 tests, all passing.
 
 ### Deliberate tradeoffs on v2, not bugs
 
@@ -167,10 +167,13 @@ See `docs/DESIGN-v2.md`, "What this design deliberately does not do" and "Honest
   `withdraw_stake`, `grant_permit`, `increase_permit`, `revoke_permit`, `release_permit`,
   `release_permit_early`; `test_phase3.rs` (71 tests) covers the four dispute handlers —
   `raise_dispute`, `resolve_dispute`, `expire_dispute`, `close_dispute` — including the
-  Ed25519/introspection attack-probe section; `test_devnet_demo_parity.rs` (1 test) replays
+  Ed25519/introspection attack-probe section; `test_devnet_demo_parity.rs` (2 tests) replays
   `examples/devnet_demo.rs`'s instruction sequence against LiteSVM before it spends real devnet
-  SOL; `common/mod.rs` is the shared `World` test harness both use, not a test file itself. Run
-  with `OPENSSL_NO_VENDOR=1 cargo test` from `programs/truststake/`.
+  SOL — one against a blank chain, one against a chain pre-seeded with the original eight-step
+  walk's own state, since a blank-chain-only replay cannot see a bug that only exists once a
+  slash has moved `staked` and `committed` together (see "Known gotchas" below); `common/mod.rs`
+  is the shared `World` test harness both use, not a test file itself. Run with
+  `OPENSSL_NO_VENDOR=1 cargo test` from `programs/truststake/`.
 - **Real devnet demo:** `programs/truststake/examples/devnet_demo.rs` — exercises all 19 handlers
   (`lib.rs`) across three marketplaces and two sellers, in four wall-clock-gated stages, since
   three of the protocol's waits (`release_permit_early`'s clock-skew tolerance, `release_permit`'s
@@ -398,3 +401,24 @@ MIT-licensed. A private fork must not call it unmodified.
   existing: `anchor idl fetch`, with or without `-o`, returns raw zlib-compressed hex in this
   version rather than decoded JSON, so decode with `bytes.fromhex(...)` then
   `zlib.decompress(...)` before comparing against the local `target/idl/*.json`.
+- **A devnet_demo.rs step whose amounts are hardcoded against a fresh-chain assumption breaks
+  the instant a slash has ever touched the seller, and a blank-chain-only parity test cannot
+  catch it.** `SellerStake::slash` reduces `staked` and `committed` TOGETHER, so a step written
+  against "committed is always 400" (the value on a fresh chain, after two 200 permits) goes
+  wrong wherever the difference `staked - committed` (free collateral) is what's actually being
+  compared against, not either figure alone. This hit real devnet on 2026-08-31: Step 6's
+  withdrawal amounts assumed committed = 400, but an $80 upheld dispute in the 2026-08-24 run
+  had already reduced it to 320, so a withdrawal sized to land exactly at the (stale) cap
+  landed comfortably inside the real one instead, and the "this must fail" half of the
+  demonstration silently succeeded — proving nothing, not erroring loudly. `tests/test_devnet_demo_parity.rs`'s
+  original test replayed the same sequence against a BLANK LiteSVM chain, where the fresh-chain
+  assumption is always true by construction, so it kept passing throughout. The fix has two
+  parts, both required: (1) derive the amount from live state immediately before the step —
+  free collateral for a "must succeed" step, `free + 1` for a "must fail" one — never from a
+  constant, the same pattern `stage1_6_top_up_seller_free_collateral` already used correctly
+  before this bug was found; and (2) add a SECOND parity test that pre-seeds LiteSVM with the
+  original eight-step walk's own state before replaying the sequence on top of it
+  (`test_devnet_demo_resumed_after_prior_slash`), since only a chain that already carries a
+  prior slash can exercise this class of bug at all. A future step written against "amount X is
+  always safe/unsafe relative to committed" should be treated as suspect until proven to read
+  `staked`/`committed` live at the point it runs.
