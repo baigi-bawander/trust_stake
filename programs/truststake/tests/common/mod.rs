@@ -22,6 +22,7 @@
 use std::{
     collections::HashMap,
     env,
+    path::Path,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -203,21 +204,40 @@ pub struct World {
     token_accounts: Vec<Pubkey>,
 }
 
+/// Reads one of `anchor build`'s artifacts out of `target/deploy/` at run
+/// time.
+///
+/// Deliberately a runtime read rather than `include_bytes!`. These two
+/// files are produced by two *separate* workspace members, and `anchor
+/// build` builds workspace members strictly one at a time, running a full
+/// host-toolchain compile of this crate's test targets (its IDL pass)
+/// after `truststake` but before `cpi_wrapper` exists. An
+/// `include_bytes!("../../../../target/deploy/cpi_wrapper.so")` therefore
+/// makes `anchor build` unable to complete from a clean `target/deploy/`:
+/// the IDL pass cannot compile a file that names an artifact the same
+/// command has not reached yet. Reading at run time breaks that
+/// compile-time cycle; `../../build.rs` still guarantees freshness, and
+/// now guarantees it about the exact bytes these tests load.
+fn deployed_program(file_name: &str) -> Vec<u8> {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/deploy")
+        .join(file_name);
+    std::fs::read(&path)
+        .unwrap_or_else(|error| panic!("failed to read {}: {error}", path.display()))
+}
+
 impl World {
     pub fn new() -> World {
         let program_id = truststake::id();
         let mut svm = LiteSVM::new();
-        svm.add_program(program_id, include_bytes!("../../../../target/deploy/truststake.so"))
+        svm.add_program(program_id, &deployed_program("truststake.so"))
             .expect("failed to load truststake.so; run `anchor build` first");
         // The CPI and wrong-program fixture (programs/cpi_wrapper), loaded
         // at its own declared ID so its Anchor entrypoint accepts the
         // calls. Present in every World rather than only where it is used:
         // it is a few kilobytes and one `add_program` call.
-        svm.add_program(
-            cpi_wrapper::ID,
-            include_bytes!("../../../../target/deploy/cpi_wrapper.so"),
-        )
-        .expect("failed to load cpi_wrapper.so; run `anchor build` first");
+        svm.add_program(cpi_wrapper::ID, &deployed_program("cpi_wrapper.so"))
+            .expect("failed to load cpi_wrapper.so; run `anchor build` first");
 
         // LiteSVM's default Clock sysvar starts at unix_timestamp 0. A real
         // cluster's timestamp is never 0, and `update_marketplace` uses 0 as
