@@ -6,10 +6,20 @@ Staked reputation for peer-to-peer marketplaces on Solana. Full pitch, architect
 
 - **Stage:** working prototype, submitted as an Edversity/Superteam Pakistan capstone. Devnet
   runs `main`'s binary, now v2; see "The v2 rebuild" below.
-- **Deployed:** devnet, program ID `3Vc6M8Az9h2GtDmqqhQKURqTKKygNfekQq7PoJris6V2`. Upgraded in
-  place to v2 on 2026-08-24 (data length 649,264 bytes, deployed in slot 487349484). v1 no
-  longer exists at this address; v1's own transaction history stays valid on Solana Explorer
-  regardless, since upgrading a program does not change chain history.
+- **Deployed:** devnet, program ID `3Vc6M8Az9h2GtDmqqhQKURqTKKygNfekQq7PoJris6V2`. First
+  upgraded in place to v2 on 2026-08-24 (slot 487349484), and again on 2026-08-31 (slot
+  491019091), which is the deploy live now. Data length stays 649,264 bytes — the account was
+  allocated with headroom, and the current binary is 596,864 bytes, so the upgrade fitted
+  without an extend. Before 2026-08-31 the deployed bytes were commit `34c5483`'s; they are
+  now `main`'s, verified byte-for-byte by `solana program dump` against the local
+  `target/deploy/truststake.so` (both SHA-256
+  `101a10d8145870f77a2b79f66d41c8af85252a6678a21083fcf4316551369bfc`). That upgrade changed 23
+  files under `programs/truststake/src/` and no account layout: `git diff 34c5483..main --
+  programs/truststake/src/state/ programs/truststake/src/state.rs | grep -E "^[+-]\s+pub "`
+  returns nothing, and `ACCOUNT_VERSION` is 1 on both sides, so the devnet accounts written
+  under the old binary are still read correctly by this one. v1 no longer exists at this
+  address; v1's own transaction history stays valid on Solana Explorer regardless, since
+  upgrading a program does not change chain history.
 - **Tests:** `main` has 151 tests passing (`cargo test` from `programs/truststake/`, LiteSVM),
   plus a real devnet run with every signature recorded in
   [docs/TESTING.md](docs/TESTING.md).
@@ -220,14 +230,40 @@ See `docs/DESIGN-v2.md`, "What this design deliberately does not do" and "Honest
   2026-08-24), and `init` fails against an account that is already allocated. A stale IDL is
   worse than no IDL: Anchor numbers error codes positionally as 6000 + index and publishes
   that numbering in the IDL, so an outdated one mis-names every error and mis-decodes any
-  instruction whose arguments changed. The onchain IDL is currently stale in exactly this
-  append-only way and owed an `anchor idl upgrade` at the next deploy: `TrustStakeError` had 38
-  variants (`NotInitialAdmin` through `InvalidChainId`) at commit `34c5483`, the last commit to
-  touch `error.rs` before the 2026-08-24 upload, and has 40 now (`git diff
-  programs/truststake/src/error.rs` against that commit), the two new ones — `AccountVersionMismatch`
-  (6038) and `UnsupportedMintExtension` (6039) — added since but not yet deployed. Because both
-  were appended rather than inserted, every code the published IDL already knows still resolves
-  correctly; it is just missing names for 6038 and 6039 until the next upgrade.
+  instruction whose arguments changed.
+
+  **This debt is still outstanding, and the upgrade above currently does not work.** It was
+  attempted three times on 2026-08-31 alongside that day's program deploy, twice plainly and
+  once with `--priority-fee 200000`, and failed identically every time with `[Error] The
+  provided transaction plan failed to execute` / `Error: Failed to upgrade IDL`. That is *not*
+  the "reports failure after succeeding" trap recorded under "Known gotchas" — it was checked
+  onchain rather than believed, and the upload genuinely did not land. What actually happens:
+  Anchor 1.1.2 stores the IDL in a Program Metadata program account
+  (`ProgM6JCCvbYkfKqJYHePx4xxSUSqJp7rh8Lyv7nk7S`, address
+  `A1r5sAi41UnpGBL9Xo2gk1T12LzCDVo3d79MEsM4xvkc`, seed `idl`), and `upgrade` is an alias for
+  writing a buffer and then setting it. Each attempt allocated an 8,845-byte buffer and left it
+  **partially written** — 6,532, then 7,495, then 7,495 non-zero bytes, so the zlib payload at
+  offset 96 will not decompress — while every transaction that did land returned `err: None`.
+  Non-deterministic truncation with no failing transaction points at write transactions being
+  silently dropped by the public devnet RPC, which a priority fee did not fix. Three abandoned
+  buffers now hold 0.06245208 SOL each (`6mkxvZp8SnBAfBg7iq3WQizT35QQJCZjpyyGFerkrWnm`,
+  `CHTWvALh4J7Wjr4GkrQihhu5KyRnsu6H7QGLLKNzCQRL`,
+  `H1P5eHX9a336bAWTtJ9HGxLwQU6q9sqVA8Geh9jRFcCN`). **Do not run `anchor idl close` to reclaim
+  them** — it takes a program ID and a seed, so it targets the live IDL metadata account, not a
+  buffer, and would destroy the published IDL. Worth trying next: a non-public devnet RPC
+  endpoint via `--provider.cluster <url>`, or `anchor idl create-buffer` / `write-buffer
+  --buffer <addr>` as two explicit steps so a partly-written buffer can be resumed instead of
+  re-allocated.
+
+  Meanwhile the published IDL is the 2026-08-24 one and is **safe to keep using**, verified by
+  fetching and decompressing it and diffing against `target/idl/truststake.json`: all 19
+  instructions present with identical names, arguments and discriminators; identical account
+  list; every shared error code 6000-6037 identical. It differs in exactly two harmless ways —
+  it lacks names for the two appended variants `AccountVersionMismatch` (6038) and
+  `UnsupportedMintExtension` (6039), `TrustStakeError` having grown from 38 to 40; and one doc
+  string on `DisputeRecord.closable_after` still describes the pre-fix formula. Nothing
+  decodes wrongly, because both error variants were appended rather than inserted and no field
+  order or type moved.
 - **Before changing any protocol constant or any field on a stored account, search the
   entire project for every site that reads it, and report those sites before making the
   change.** `ACCOUNT_VERSION` was written at five call sites and read at zero for the
@@ -332,6 +368,26 @@ MIT-licensed. A private fork must not call it unmodified.
 
 - **Anchor 1.0.x is a recent major version** with breaking changes from 0.32 (`CpiContext::new` takes a `Pubkey` now, not an `AccountInfo`; IDL handling changed). If you're referencing older Anchor examples/tutorials, expect some to be stale.
 - **A wallet that ends a transaction with a nonzero balance must stay above the rent-exempt minimum for a bare account**, or the transaction is rejected in preflight. This bit the devnet demo script the first time: funding a throwaway wallet with *exactly* what it spends leaves it at a small nonzero remainder below that floor. Fund with an extra `get_minimum_balance_for_rent_exemption(0)` worth of headroom for any wallet that isn't being fully drained to zero.
+- **`anchor build` can fail inside `programs/truststake/build.rs`'s staleness guard, and
+  deleting the artifacts is the wrong fix.** The symptom is a panic that
+  `target/deploy/cpi_wrapper.so is older than .../Cargo.lock`, ending in `Error: Building IDL
+  failed`. It reads like a stale artifact; it is not. `anchor build` processes workspace
+  members strictly one at a time and completely, running this crate's *host*-toolchain IDL
+  pass (`TARGET=x86_64-unknown-linux-gnu`, `CARGO_FEATURE_IDL_BUILD=1`) after `truststake` but
+  before `cpi_wrapper` is built at all — so a guard that demands a fresh `cpi_wrapper.so`
+  fires during the very command that would produce it. Two things compounded it: the test
+  harness used `include_bytes!` on that sibling artifact, so a clean `target/deploy/` broke
+  `anchor build` outright even with the guard removed; and because cargo's freshness is
+  content-based and `cargo build-sbf` re-copies into `target/deploy/` only when the artifact
+  actually changed, a `Cargo.lock` whose *mtime* moved for any reason (a re-resolve, a
+  checkout, an editor save) permanently outran a `.so` cargo correctly declined to rebuild —
+  making the guard's own advice, "run `anchor build`", unsatisfiable. A previous session
+  escaped by deleting the `.so` files, which only reset the mtimes; the failure returned the
+  next time anything wrote `Cargo.lock`. Fixed on 2026-08-31 (commit `08d8322`): the guard
+  skips the IDL pass, `tests/common/mod.rs` reads both artifacts at run time instead of
+  embedding them, and `Cargo.lock` plus both manifests are compared by content against copies
+  in `target/deploy/.build-guard/` taken at the last SBF build. If you see this error again,
+  read `build.rs`'s module docs before touching anything — do not delete artifacts.
 - **`anchor idl init` (Anchor 1.1.2) can report failure even after it fully succeeds.** It
   printed `Error: Failed to initialize IDL` on the only IDL upload this project has done, but
   every one of the 8 onchain transactions it sent showed `Status: Ok`, and fetching the
