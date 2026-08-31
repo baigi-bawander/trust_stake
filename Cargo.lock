@@ -5574,6 +5574,7 @@ dependencies = [
  "bincode",
  "cpi_wrapper",
  "litesvm",
+ "serde_json",
  "solana-account",
  "solana-commitment-config",
  "solana-ed25519-program",

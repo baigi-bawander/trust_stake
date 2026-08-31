@@ -161,7 +161,33 @@ See `docs/DESIGN-v2.md`, "What this design deliberately does not do" and "Honest
   `examples/devnet_demo.rs`'s instruction sequence against LiteSVM before it spends real devnet
   SOL; `common/mod.rs` is the shared `World` test harness both use, not a test file itself. Run
   with `OPENSSL_NO_VENDOR=1 cargo test` from `programs/truststake/`.
-- **Real devnet demo:** `programs/truststake/examples/devnet_demo.rs` — walks two marketplaces (v2's SPL-token collateral, not v1's native SOL) sharing one seller's stake as real transactions: one stake, two independent permits, a withdrawal against the cap that succeeds next to one that is meant to fail, and a dispute proved through the Ed25519 precompile. Gated behind the `devnet_demo` Cargo feature; run with `cargo run --example devnet_demo --features devnet_demo` from `programs/truststake/`. The signing wallet must match `constants::INITIAL_ADMIN`. It funds several throwaway keypairs by direct transfer (not airdrop, since devnet airdrops are rate-limited) and is idempotent on `initialize_config` and the test mint it pins, reusing both from the existing `Config` account if one is already there. `tests/test_devnet_demo_parity.rs` proves the same instruction sequence against LiteSVM first, before any of it spends devnet SOL.
+- **Real devnet demo:** `programs/truststake/examples/devnet_demo.rs` — exercises all 19 handlers
+  (`lib.rs`) across three marketplaces and two sellers, in four wall-clock-gated stages, since
+  three of the protocol's waits (`release_permit_early`'s clock-skew tolerance, `release_permit`'s
+  complaint window, `expire_dispute`/`close_dispute`'s 30-day marks) are real time on devnet and
+  cannot be skipped. Stage 1 runs immediately (config/marketplace authority transfers, a third
+  marketplace SwiftMarket registered at 0 bps bond, a PixelBazaar bond-rate change, a CashDesk
+  receipt-signer rotation, `increase_permit`, two more disputes — one left open, one raised
+  pre-rotation and rejected — and a second seller who stakes, grants, and revokes two permits);
+  stage 2 (`release_permit_early`) is due 1 hour later; stage 3 (`release_permit`) 2 days later;
+  stage 4 (`expire_dispute`, `close_dispute` ×2) 30 days later. Gated behind the `devnet_demo`
+  Cargo feature; run with `cargo run --example devnet_demo --features devnet_demo` from
+  `programs/truststake/` — the command never changes, an optional `--stage N` (1-4) forces just
+  one stage, and by default every stage currently due runs, printing what remains and exiting 0
+  (not an error) for whichever isn't due yet. The signing wallet must match
+  `constants::INITIAL_ADMIN`. Stage progress, and chain facts a fresh invocation cannot re-derive
+  on its own (the two original marketplaces' onchain IDs, which were never persisted before this
+  revision and are random rather than the fixed strings an earlier task briefing assumed; new
+  disputes' `order_id`s; revocation timestamps), live in
+  `programs/truststake/examples/.devnet-demo-state/progress.json` (gitignored, alongside the
+  existing `.devnet-demo-keypairs/`). Every step, old and new, checks live chain state before
+  acting — including the original eight steps, which turned out not to be as idempotent as they
+  looked: `initialize_stake`/`grant_permit`/`register_marketplace` all use Anchor's `init`, which
+  hard-errors on a second call, and `raise_dispute`'s `order_id` was fresh-random every run, so a
+  naive re-run of the pre-existing script would have hard-failed or silently raised duplicate
+  disputes the moment this task's stage design required running it more than once.
+  `tests/test_devnet_demo_parity.rs` proves the entire four-stage sequence against LiteSVM first
+  — including the boundary of every wait, both directions — before any of it spends devnet SOL.
 - **Build:** `anchor build` (not plain `cargo build` — Solana programs need the SBF target, which `anchor build` invokes via `cargo build-sbf`). `target/deploy/truststake-keypair.json`
   (pubkey `G8B59KZpf7siepeb3PRX3KuPk4LC1LZarF8YmuPHGUZ`, confirmed with `solana-keygen pubkey`)
   does not match `declare_id!` in `src/lib.rs` or either `[programs.*]` entry in `Anchor.toml`

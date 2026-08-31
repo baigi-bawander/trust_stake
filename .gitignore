@@ -11,3 +11,8 @@ test-ledger
 # CLI keypair JSON, one file per role) so a failed or partial run can be
 # resumed with the same wallets instead of orphaning what it already funded.
 programs/truststake/examples/.devnet-demo-keypairs/
+
+# devnet_demo.rs's four-stage progress file (which steps are done, recovered
+# marketplace ids, dispute order ids, revocation timestamps) so a stage due
+# days later resumes correctly instead of redoing or losing earlier state.
+programs/truststake/examples/.devnet-demo-state/

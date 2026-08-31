@@ -1,45 +1,69 @@
-//! Walks TWO marketplaces sharing ONE seller's collateral pool against
-//! Solana devnet, printing a transaction signature and an explorer URL for
-//! every step, so the multi-tenant guarantee (decision 1, docs/DESIGN-v2.md)
-//! is visible onchain, not only in tests.
+//! Walks TWO original marketplaces sharing ONE seller's collateral pool,
+//! then a THIRD marketplace and a SECOND seller, against Solana devnet,
+//! printing a transaction signature and an explorer URL for every step, so
+//! every one of the program's 19 handlers (`lib.rs`) is visible onchain, not
+//! only in tests. docs/DESIGN-v2.md's Build order assigns this file's v2
+//! rewrite to Phase 4 Step 2; this revision extends that same walk to the
+//! remaining 11 handlers across four wall-clock-gated stages.
 //!
-//! docs/DESIGN-v2.md's Build order assigns this file's v2 rewrite to Phase 4
-//! Step 2. tests/test_devnet_demo_parity.rs's
-//! test_devnet_demo_sequence_parity replays this exact instruction
-//! sequence, same handlers and same arguments, against LiteSVM before any
-//! of it touches devnet. Read that test alongside this file, and change
-//! both together: if the sequence below changes, that test is what catches
-//! a mistake for free instead of this script teaching it at 0.5 SOL a
-//! lesson.
+//! tests/test_devnet_demo_parity.rs's test_devnet_demo_sequence_parity
+//! replays this exact instruction sequence, same handlers and same
+//! arguments, against LiteSVM (which can warp its own clock) before any of
+//! it touches devnet. Read that test alongside this file, and change both
+//! together: if the sequence below changes, that test is what catches a
+//! mistake for free instead of this script teaching it at real cost.
 //!
 //! Run with:
 //!   cargo run --example devnet_demo --features devnet_demo --manifest-path programs/truststake/Cargo.toml
+//!
+//! Optionally with `--stage N` (N = 1..=4) to attempt only that stage; the
+//! default attempts every stage, in order, and each stage (and each
+//! time-gated action inside stage 4) independently checks whether it is due
+//! yet, printing what remains and exiting 0 rather than failing when it is
+//! not.
 //!
 //! The wallet at ~/.config/solana/id.json (or TRUSTSTAKE_ADMIN_KEYPAIR, if
 //! set) pays for setup and must equal constants::INITIAL_ADMIN, the only
 //! signer initialize_config accepts. Every throwaway wallet below is funded
 //! by a direct System Program transfer rather than an airdrop, since devnet
-//! airdrops are rate-limited, and each one that ends a transaction with a
-//! nonzero balance is funded with an extra rent-exempt minimum of headroom
-//! on top of what it actually spends, or the transaction that leaves it
-//! there is rejected in preflight.
+//! airdrops are rate-limited, and every funding transfer tops up to a
+//! target balance rather than sending a fixed amount unconditionally, so
+//! re-running an already-funded wallet costs nothing.
 //!
-//! What this walk does not do: release a permit. release_permit needs
-//! revoked_at + complaint_window (floored at 2 days) to elapse, and
-//! release_permit_early still needs CLOCK_SKEW_TOLERANCE_SECONDS (one
-//! hour) after revocation. Neither fits inside a single run of this
-//! script. The walk ends once the two permits' final states diverge (step
-//! 8 below); tests/test_phase2.rs exercises release instead. Because
-//! nothing here ever releases a permit, the seller's collateral and both
-//! marketplaces stay frozen once the process exits; acceptable for a
-//! devnet demo funded with test-mint tokens, not a resumable production
-//! flow. What IS resumable is a failed or partial run: every throwaway
-//! wallet is persisted to `examples/.devnet-demo-keypairs/` (gitignored,
-//! never printed) via `load_or_create_keypair`, so re-running after a
-//! failure reuses the same wallets and picks up wherever the previous run
-//! left off, the same way `initialize_config` and the test mint are
-//! already reused from an existing `Config` account.
-
+//! ## Resumability, and why nearly everything below checks chain state first
+//!
+//! This script is meant to be run more than once: three of the protocol's
+//! waits (release_permit_early's clock-skew tolerance, release_permit's
+//! complaint window, expire_dispute/close_dispute's 30-day marks) cannot be
+//! skipped on devnet, because devnet runs on real clock time. The four
+//! stages below exist for exactly that reason -- see "Why four stages" in
+//! the task history for the full derivation -- and a user checking on stage
+//! 2's progress two days after stage 1 must re-run this same binary and
+//! reach stage 2's logic without stage 1's already-finished steps failing
+//! or repeating first.
+//!
+//! That requirement turned out to reach further back than the four new
+//! stages: of the original eight steps below (initialize_config through
+//! resolve_dispute), only initialize_config and the test mint were actually
+//! idempotent before this revision. `register_marketplace`,
+//! `initialize_stake`, and `grant_permit` all use Anchor's `init`, which
+//! hard-errors on a second call against an already-occupied PDA; the two
+//! marketplace IDs and both throwaway token accounts were generated fresh
+//! (via `Keypair::new()`) on every run with no persistence at all; and
+//! `raise_dispute`'s `order_id` was likewise fresh-random every run, so a
+//! second run would have raised (and upheld) a second, unwanted $80 claim
+//! rather than erroring. Since stage 2/3/4 require this file's `main` to
+//! run start-to-finish on every later invocation, any one of those gaps
+//! would have broken the very first resumed run, before it ever reached the
+//! new stage logic. Every step below is now gated on live chain state (does
+//! the account already exist, does its recorded value already match) the
+//! same way the original `initialize_config` step already gated on
+//! `Config` existing, and the two marketplace IDs and every dispute
+//! `order_id` this file cares about are recovered by scanning the
+//! program's own accounts (`find_marketplace_by_authority`,
+//! `find_dispute_by_marketplace_seller_status`) rather than assumed, since
+//! the original 2026-08-24 run predates any of this file's persistence and
+//! left no record of the random IDs it chose.
 use {
     anchor_lang::{
         prelude::{Discriminator, Pubkey, Space},
@@ -47,12 +71,16 @@ use {
         AccountDeserialize, InstructionData, ToAccountMetas,
     },
     anchor_spl::token::spl_token,
+    serde_json::{json, Value},
     solana_commitment_config::CommitmentConfig,
     solana_ed25519_program::new_ed25519_instruction_with_signature,
     solana_instruction::error::InstructionError,
     solana_keypair::{read_keypair_file, write_keypair_file, Keypair},
     solana_message::{Message, VersionedMessage},
-    solana_rpc_client::{api::config::RpcSendTransactionConfig, rpc_client::RpcClient},
+    solana_rpc_client::{
+        api::{config::RpcSendTransactionConfig, request::TokenAccountsFilter},
+        rpc_client::RpcClient,
+    },
     solana_signature::Signature,
     solana_signer::Signer,
     solana_transaction::versioned::VersionedTransaction,
@@ -60,6 +88,7 @@ use {
     std::{
         env,
         error::Error,
+        fs,
         path::{Path, PathBuf},
         thread::sleep,
         time::{Duration, SystemTime, UNIX_EPOCH},
@@ -67,12 +96,12 @@ use {
     truststake::{
         constants::{
             BOND_VAULT_SEED, CHAIN_ID_DEVNET, CLOCK_SKEW_TOLERANCE_SECONDS, CONFIG_SEED, DISPUTE_SEED,
-            INITIAL_ADMIN, MARKETPLACE_SEED, MIN_COMPLAINT_WINDOW_SECONDS, PERMIT_SEED, RECEIPT_DOMAIN,
-            SECONDS_PER_DAY, SEED_VERSION, STAKE_SEED, VAULT_SEED,
+            INITIAL_ADMIN, MARKETPLACE_SEED, MAX_COMPLAINT_WINDOW_SECONDS,
+            PERMIT_SEED, RECEIPT_DOMAIN, SECONDS_PER_DAY, SEED_VERSION, STAKE_SEED, VAULT_SEED,
         },
         error::TrustStakeError,
         receipt::OrderReceipt,
-        state::{Config, DisputeRecord, Marketplace, SellerStake, SlashPermit},
+        state::{Config, DisputeRecord, DisputeStatus, Marketplace, SellerStake, SlashPermit},
     },
 };
 
@@ -116,6 +145,47 @@ const PIXELBAZAAR_COMPLAINT_WINDOW_SECONDS: i64 = 7 * SECONDS_PER_DAY;
 const CASHDESK_BOND_BPS: u16 = 1_000; // 10%
 const PIXELBAZAAR_BOND_BPS: u16 = 500; // 5%, visibly distinct from CashDesk's
 
+// ==================== Stage 1 constants ====================
+
+/// Zero is legal on purpose (CLAUDE.md's deliberate-tradeoffs list); this is
+/// the first time devnet shows both ends of the legal bond range at once,
+/// next to CashDesk's 1,000 bps.
+const SWIFTMARKET_ID: [u8; 16] = *b"swiftmarket-demo";
+const SWIFTMARKET_COMPLAINT_WINDOW_SECONDS: i64 = MAX_COMPLAINT_WINDOW_SECONDS;
+const SWIFTMARKET_BOND_BPS: u16 = 0;
+
+const PIXELBAZAAR_NEW_BOND_BPS: u16 = 300;
+
+/// 1.6 tops up the ORIGINAL seller's free collateral (staked - committed) to
+/// at least this much before granting SwiftMarket's permit, rather than
+/// adding a fixed amount unconditionally: on devnet today that free balance
+/// is already zero (500 staked, 400 committed, 80 slashed --
+/// docs/TESTING.md), so a fresh run adds exactly the $200 the task
+/// describes, and a resumed run adds only whatever is still missing.
+const SELLER_FREE_COLLATERAL_TARGET: u64 = usdc(200);
+
+const SWIFTMARKET_GRANT: u64 = usdc(100);
+const SWIFTMARKET_INCREASE: u64 = usdc(50);
+const SWIFTMARKET_PERMIT_TOTAL: u64 = SWIFTMARKET_GRANT + SWIFTMARKET_INCREASE;
+
+const SWIFTMARKET_ORDER_AMOUNT: u64 = usdc(80);
+const SWIFTMARKET_CLAIM: u64 = usdc(40);
+/// SwiftMarket's bond is 0, but the buyer's token account still needs to
+/// exist for the (zero-amount) transfer_checked CPI to succeed.
+const SWIFTMARKET_BUYER_TOKEN_FUNDING: u64 = usdc(1);
+
+const CASHDESK_SECOND_ORDER_AMOUNT: u64 = usdc(60);
+const CASHDESK_SECOND_CLAIM: u64 = usdc(25);
+/// How far before CashDesk's receipt-signer rotation (1.4) the second
+/// dispute's receipt (1.10) is backdated, so it unambiguously predates
+/// `signer_rotated_at` and exercises `raise_dispute`'s `signed_by_previous`
+/// branch rather than landing on the boundary.
+const BACKDATE_BEFORE_ROTATION_SECONDS: i64 = 60;
+
+const SELLER_B_STAKE: u64 = usdc(100);
+const SELLER_B_CASHDESK_PERMIT: u64 = usdc(50);
+const SELLER_B_PIXELBAZAAR_PERMIT: u64 = usdc(50);
+
 /// A few multiples of Solana's 5,000-lamport base fee per signature
 /// (https://docs.anza.xyz/consensus/fees#current-fee-structure), as
 /// headroom on top of rent for each throwaway wallet's transactions.
@@ -132,6 +202,114 @@ fn keypairs_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/.devnet-demo-keypairs")
 }
 
+/// Where stage progress and recovered chain facts (marketplace IDs, dispute
+/// order IDs, revocation timestamps) are persisted between invocations --
+/// see the module doc comment's "Resumability" section. `.gitignore`
+/// excludes this directory.
+fn state_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/.devnet-demo-state")
+}
+
+fn progress_path() -> PathBuf {
+    state_dir().join("progress.json")
+}
+
+/// Loads the progress file, or an empty object if this is the first
+/// invocation under this revision of the script.
+fn load_progress() -> Result<Value, Box<dyn Error>> {
+    let path = progress_path();
+    if !path.exists() {
+        return Ok(json!({}));
+    }
+    let text = fs::read_to_string(&path).map_err(|error| format!("failed to read {path:?}: {error}"))?;
+    Ok(serde_json::from_str(&text).map_err(|error| format!("failed to parse {path:?} as JSON: {error}"))?)
+}
+
+fn save_progress(progress: &Value) -> Result<(), Box<dyn Error>> {
+    let dir = state_dir();
+    fs::create_dir_all(&dir).map_err(|error| format!("failed to create {dir:?}: {error}"))?;
+    let path = progress_path();
+    let text = serde_json::to_string_pretty(progress).expect("Value serialization cannot fail");
+    fs::write(&path, text).map_err(|error| format!("failed to write {path:?}: {error}").into())
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn hex_decode(text: &str) -> Result<Vec<u8>, Box<dyn Error>> {
+    if text.len() % 2 != 0 {
+        return Err(format!("hex string {text:?} has odd length").into());
+    }
+    (0..text.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&text[i..i + 2], 16).map_err(|error| format!("invalid hex in {text:?}: {error}").into()))
+        .collect()
+}
+
+fn get_bytes16(progress: &Value, key: &str) -> Option<[u8; 16]> {
+    let text = progress.get(key)?.as_str()?;
+    let bytes = hex_decode(text).ok()?;
+    bytes.try_into().ok()
+}
+
+fn set_bytes16(progress: &mut Value, key: &str, value: [u8; 16]) {
+    progress[key] = json!(hex_encode(&value));
+}
+
+fn get_bytes32(progress: &Value, key: &str) -> Option<[u8; 32]> {
+    let text = progress.get(key)?.as_str()?;
+    let bytes = hex_decode(text).ok()?;
+    bytes.try_into().ok()
+}
+
+fn set_bytes32(progress: &mut Value, key: &str, value: [u8; 32]) {
+    progress[key] = json!(hex_encode(&value));
+}
+
+fn get_i64(progress: &Value, key: &str) -> Option<i64> {
+    progress.get(key)?.as_i64()
+}
+
+fn set_i64(progress: &mut Value, key: &str, value: i64) {
+    progress[key] = json!(value);
+}
+
+fn get_bool(progress: &Value, key: &str) -> bool {
+    progress.get(key).and_then(|v| v.as_bool()).unwrap_or(false)
+}
+
+fn set_bool(progress: &mut Value, key: &str, value: bool) {
+    progress[key] = json!(value);
+}
+
+fn now_unix() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system time must be after the unix epoch")
+        .as_secs() as i64
+}
+
+/// Reads `--stage N` off argv, if present. `N` must be 1..=4.
+fn parse_stage_arg() -> Result<Option<u8>, Box<dyn Error>> {
+    let args: Vec<String> = env::args().collect();
+    for i in 1..args.len() {
+        if args[i] == "--stage" {
+            let value = args
+                .get(i + 1)
+                .ok_or("--stage requires a value (1-4)")?;
+            let stage: u8 = value
+                .parse()
+                .map_err(|_| format!("--stage value must be an integer 1-4, got {value:?}"))?;
+            if !(1..=4).contains(&stage) {
+                return Err(format!("--stage must be 1-4, got {stage}").into());
+            }
+            return Ok(Some(stage));
+        }
+    }
+    Ok(None)
+}
+
 /// Loads `{dir}/{name}.json` if a previous run already created it, so a
 /// resumed run reuses the same wallet (and therefore the same onchain
 /// accounts) instead of generating an unfunded stranger; otherwise
@@ -144,6 +322,44 @@ fn load_or_create_keypair(dir: &Path, name: &str) -> Result<Keypair, Box<dyn Err
     let keypair = Keypair::new();
     write_keypair_file(&keypair, &path).map_err(|error| format!("failed to write {path:?}: {error}"))?;
     Ok(keypair)
+}
+
+/// Bundles the values almost every function below needs, so their
+/// signatures carry one parameter for "the chain" rather than five.
+struct Chain<'a> {
+    client: &'a RpcClient,
+    program_id: Pubkey,
+    event_authority: Pubkey,
+    config: Pubkey,
+    mint: Pubkey,
+}
+
+fn marketplace_pda(program_id: Pubkey, marketplace_id: [u8; 16]) -> Pubkey {
+    Pubkey::find_program_address(&[MARKETPLACE_SEED, SEED_VERSION, marketplace_id.as_ref()], &program_id).0
+}
+
+fn bond_vault_pda(program_id: Pubkey, marketplace: Pubkey) -> Pubkey {
+    Pubkey::find_program_address(&[BOND_VAULT_SEED, SEED_VERSION, marketplace.as_ref()], &program_id).0
+}
+
+fn stake_pda(program_id: Pubkey, seller: Pubkey) -> Pubkey {
+    Pubkey::find_program_address(&[STAKE_SEED, SEED_VERSION, seller.as_ref()], &program_id).0
+}
+
+fn stake_vault_pda(program_id: Pubkey, seller: Pubkey) -> Pubkey {
+    Pubkey::find_program_address(&[VAULT_SEED, SEED_VERSION, seller.as_ref()], &program_id).0
+}
+
+fn permit_pda(program_id: Pubkey, seller: Pubkey, marketplace: Pubkey) -> Pubkey {
+    Pubkey::find_program_address(&[PERMIT_SEED, SEED_VERSION, seller.as_ref(), marketplace.as_ref()], &program_id).0
+}
+
+fn dispute_pda(program_id: Pubkey, marketplace: Pubkey, seller: Pubkey, order_id: [u8; 32]) -> Pubkey {
+    Pubkey::find_program_address(
+        &[DISPUTE_SEED, SEED_VERSION, marketplace.as_ref(), seller.as_ref(), order_id.as_ref()],
+        &program_id,
+    )
+    .0
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -171,13 +387,15 @@ fn main() -> Result<(), Box<dyn Error>> {
         .into());
     }
 
+    let forced_stage = parse_stage_arg()?;
+    let should_run = |stage: u8| forced_stage.is_none() || forced_stage == Some(stage);
+
     let program_id = truststake::id();
     let config = Pubkey::find_program_address(&[CONFIG_SEED, SEED_VERSION], &program_id).0;
     let event_authority = Pubkey::find_program_address(&[b"__event_authority"], &program_id).0;
 
     let keypairs_dir = keypairs_dir();
-    std::fs::create_dir_all(&keypairs_dir)
-        .map_err(|error| format!("failed to create {keypairs_dir:?}: {error}"))?;
+    fs::create_dir_all(&keypairs_dir).map_err(|error| format!("failed to create {keypairs_dir:?}: {error}"))?;
     let seller = load_or_create_keypair(&keypairs_dir, "seller")?;
     let buyer = load_or_create_keypair(&keypairs_dir, "buyer")?;
     let cashdesk_authority = load_or_create_keypair(&keypairs_dir, "cashdesk_authority")?;
@@ -204,6 +422,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!();
 
     let client = RpcClient::new_with_commitment(DEVNET_URL, CommitmentConfig::confirmed());
+    let mut progress = load_progress()?;
 
     fund_wallets(
         &client,
@@ -237,15 +456,13 @@ fn main() -> Result<(), Box<dyn Error>> {
         mint
     };
 
-    let (seller_token_account, signature) = create_token_account(&client, &admin, &mint, &seller.pubkey())?;
-    print_step("Create seller token account", &signature);
-    let (buyer_token_account, signature) = create_token_account(&client, &admin, &mint, &buyer.pubkey())?;
-    print_step("Create buyer token account", &signature);
+    let seller_token_account =
+        load_or_find_or_create_token_account(&client, &keypairs_dir, "seller", &admin, &mint, &seller.pubkey())?;
+    let buyer_token_account =
+        load_or_find_or_create_token_account(&client, &keypairs_dir, "buyer", &admin, &mint, &buyer.pubkey())?;
 
-    let signature = mint_to_account(&client, &admin, &mint, &seller_token_account, STAKE_AMOUNT)?;
-    print_step(&format!("Mint {} to seller", format_usdc(STAKE_AMOUNT)), &signature);
-    let signature = mint_to_account(&client, &admin, &mint, &buyer_token_account, BUYER_TOKEN_FUNDING)?;
-    print_step(&format!("Mint {} to buyer", format_usdc(BUYER_TOKEN_FUNDING)), &signature);
+    top_up_token_balance(&client, &admin, &mint, &seller_token_account, STAKE_AMOUNT)?;
+    top_up_token_balance(&client, &admin, &mint, &buyer_token_account, BUYER_TOKEN_FUNDING)?;
     println!();
 
     // ==================== Step 2: initialize_config ====================
@@ -271,47 +488,41 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     println!();
 
-    // ==================== Step 3: register two marketplaces ====================
+    let chain = Chain { client: &client, program_id, event_authority, config, mint };
+
+    // ==================== Step 3: register/recover two marketplaces ====================
     println!("=== Step 3: register two marketplaces against the same seller's future collateral ===");
-    let cashdesk_id = random_marketplace_id();
-    let cashdesk = register_marketplace(
-        &client,
-        program_id,
-        config,
-        mint,
-        event_authority,
+    let (cashdesk, cashdesk_id) = find_or_register_legacy_marketplace(
+        &chain,
+        &mut progress,
+        "cashdesk_marketplace_id",
         &cashdesk_authority,
-        cashdesk_id,
         cashdesk_receipt_signer.pubkey(),
         cashdesk_arbiter.pubkey(),
         CASHDESK_COMPLAINT_WINDOW_SECONDS,
         CASHDESK_BOND_BPS,
         "CashDesk",
     )?;
-
-    let pixelbazaar_id = random_marketplace_id();
-    let pixelbazaar = register_marketplace(
-        &client,
-        program_id,
-        config,
-        mint,
-        event_authority,
+    save_progress(&progress)?;
+    let (pixelbazaar, _pixelbazaar_id) = find_or_register_legacy_marketplace(
+        &chain,
+        &mut progress,
+        "pixelbazaar_marketplace_id",
         &pixelbazaar_authority,
-        pixelbazaar_id,
         pixelbazaar_receipt_signer.pubkey(),
         pixelbazaar_arbiter.pubkey(),
         PIXELBAZAAR_COMPLAINT_WINDOW_SECONDS,
         PIXELBAZAAR_BOND_BPS,
         "PixelBazaar",
     )?;
+    save_progress(&progress)?;
     println!();
 
     // ==================== Step 4: seller stakes once ====================
     println!("=== Step 4: seller locks {} of collateral, once ===", format_usdc(STAKE_AMOUNT));
-    let stake = Pubkey::find_program_address(&[STAKE_SEED, SEED_VERSION, seller.pubkey().as_ref()], &program_id).0;
-    let stake_vault =
-        Pubkey::find_program_address(&[VAULT_SEED, SEED_VERSION, seller.pubkey().as_ref()], &program_id).0;
-    {
+    let stake = stake_pda(program_id, seller.pubkey());
+    let stake_vault = stake_vault_pda(program_id, seller.pubkey());
+    if client.get_account(&stake).is_err() {
         let instruction = Instruction::new_with_bytes(
             program_id,
             &truststake::instruction::InitializeStake {}.data(),
@@ -330,53 +541,43 @@ fn main() -> Result<(), Box<dyn Error>> {
         );
         let signature = send(&client, &[instruction], &seller.pubkey(), &[&seller])?;
         print_step("initialize_stake", &signature);
+    } else {
+        println!("initialize_stake: already done, skipping");
     }
     {
-        let instruction = Instruction::new_with_bytes(
-            program_id,
-            &truststake::instruction::AddStake { amount: STAKE_AMOUNT }.data(),
-            truststake::accounts::AddStakeAccountConstraints {
-                seller: seller.pubkey(),
-                stake,
-                stake_vault,
-                mint,
-                seller_token_account,
-                token_program: spl_token::ID,
-                event_authority,
-                program: program_id,
-            }
-            .to_account_metas(None),
-        );
-        let signature = send(&client, &[instruction], &seller.pubkey(), &[&seller])?;
-        print_step(&format!("add_stake({})", format_usdc(STAKE_AMOUNT)), &signature);
+        let current = read_seller_stake(&client, &stake)?.staked;
+        if current < STAKE_AMOUNT {
+            let shortfall = STAKE_AMOUNT - current;
+            top_up_token_balance(&client, &admin, &mint, &seller_token_account, shortfall)?;
+            let instruction = Instruction::new_with_bytes(
+                program_id,
+                &truststake::instruction::AddStake { amount: shortfall }.data(),
+                truststake::accounts::AddStakeAccountConstraints {
+                    seller: seller.pubkey(),
+                    stake,
+                    stake_vault,
+                    mint,
+                    seller_token_account,
+                    token_program: spl_token::ID,
+                    event_authority,
+                    program: program_id,
+                }
+                .to_account_metas(None),
+            );
+            let signature = send(&client, &[instruction], &seller.pubkey(), &[&seller])?;
+            print_step(&format!("add_stake({})", format_usdc(shortfall)), &signature);
+        } else {
+            println!("add_stake: staked is already {} >= {}, skipping", format_usdc(current), format_usdc(STAKE_AMOUNT));
+        }
     }
     println!();
 
     // ==================== Step 5: grant a permit to each marketplace ====================
     println!("=== Step 5: seller grants each marketplace its own permit, from the SAME stake ===");
-    grant_permit(&client, program_id, event_authority, &seller, stake, cashdesk, CASHDESK_PERMIT, "CashDesk")?;
-    grant_permit(
-        &client,
-        program_id,
-        event_authority,
-        &seller,
-        stake,
-        pixelbazaar,
-        PIXELBAZAAR_PERMIT,
-        "PixelBazaar",
-    )?;
+    ensure_permit(&chain, &seller, stake, cashdesk, CASHDESK_PERMIT, "CashDesk")?;
+    ensure_permit(&chain, &seller, stake, pixelbazaar, PIXELBAZAAR_PERMIT, "PixelBazaar")?;
 
     let stake_state = read_seller_stake(&client, &stake)?;
-    if stake_state.committed != TOTAL_COMMITTED || stake_state.staked != STAKE_AMOUNT {
-        return Err(format!(
-            "expected staked = {}, committed = {}; found staked = {}, committed = {}",
-            format_usdc(STAKE_AMOUNT),
-            format_usdc(TOTAL_COMMITTED),
-            format_usdc(stake_state.staked),
-            format_usdc(stake_state.committed)
-        )
-        .into());
-    }
     println!(
         "committed = {} of {} staked ({} CashDesk + {} PixelBazaar)",
         format_usdc(stake_state.committed),
@@ -387,181 +588,187 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!();
 
     // ==================== Step 6: withdraw the free balance, then hit the cap ====================
-    println!("=== Step 6: withdraw the {} that is not committed to anyone ===", format_usdc(WITHDRAW_AMOUNT));
-    {
-        let instruction = Instruction::new_with_bytes(
-            program_id,
-            &truststake::instruction::WithdrawStake { amount: WITHDRAW_AMOUNT }.data(),
-            truststake::accounts::WithdrawStakeAccountConstraints {
-                seller: seller.pubkey(),
-                stake,
-                stake_vault,
-                mint,
-                seller_token_account,
-                token_program: spl_token::ID,
-                event_authority,
-                program: program_id,
-            }
-            .to_account_metas(None),
-        );
-        let signature = send(&client, &[instruction], &seller.pubkey(), &[&seller])?;
-        print_step(
-            &format!(
-                "withdraw_stake({}) -- succeeds: {} - {} >= {} committed",
-                format_usdc(WITHDRAW_AMOUNT),
-                format_usdc(STAKE_AMOUNT),
-                format_usdc(WITHDRAW_AMOUNT),
-                format_usdc(TOTAL_COMMITTED)
-            ),
-            &signature,
-        );
-    }
-
-    println!(
-        "Attempting to withdraw another {}, which the cap must refuse...",
-        format_usdc(WITHDRAW_ATTEMPT_TOO_MUCH)
-    );
-    {
-        let instruction = Instruction::new_with_bytes(
-            program_id,
-            &truststake::instruction::WithdrawStake { amount: WITHDRAW_ATTEMPT_TOO_MUCH }.data(),
-            truststake::accounts::WithdrawStakeAccountConstraints {
-                seller: seller.pubkey(),
-                stake,
-                stake_vault,
-                mint,
-                seller_token_account,
-                token_program: spl_token::ID,
-                event_authority,
-                program: program_id,
-            }
-            .to_account_metas(None),
-        );
-        // send_allowing_failure, not send: this transaction is SUPPOSED to
-        // fail, and the point is proving the cap is enforced onchain by the
-        // deployed program, for a real fee, rather than merely rejected by
-        // client-side preflight simulation before anything was spent.
-        let (signature, outcome) = send_allowing_failure(&client, &[instruction], &seller.pubkey(), &[&seller])?;
-        print_step(&format!("withdraw_stake({}) -- must fail", format_usdc(WITHDRAW_ATTEMPT_TOO_MUCH)), &signature);
-        match outcome {
-            Some(TransactionError::InstructionError(_, InstructionError::Custom(code)))
-                if code == u32::from(TrustStakeError::CommittedExceedsStaked) =>
-            {
-                println!(
-                    "  Failed exactly as designed: CommittedExceedsStaked (committed collateral \
-                     would exceed staked collateral)"
-                );
-            }
-            Some(other) => {
-                return Err(format!("expected CommittedExceedsStaked, got a different onchain failure: {other:?}").into());
-            }
-            None => return Err("expected the second withdrawal to fail onchain, but it succeeded".into()),
+    println!("=== Step 6: withdraw the {} that is not committed to anyone (one-time demo) ===", format_usdc(WITHDRAW_AMOUNT));
+    if get_bool(&progress, "step6_withdraw_demo_done") {
+        println!("Already demonstrated in a previous run, skipping (re-demonstrating a one-time boundary proof is not meaningful).");
+    } else {
+        {
+            let instruction = Instruction::new_with_bytes(
+                program_id,
+                &truststake::instruction::WithdrawStake { amount: WITHDRAW_AMOUNT }.data(),
+                truststake::accounts::WithdrawStakeAccountConstraints {
+                    seller: seller.pubkey(),
+                    stake,
+                    stake_vault,
+                    mint,
+                    seller_token_account,
+                    token_program: spl_token::ID,
+                    event_authority,
+                    program: program_id,
+                }
+                .to_account_metas(None),
+            );
+            let signature = send(&client, &[instruction], &seller.pubkey(), &[&seller])?;
+            print_step(
+                &format!(
+                    "withdraw_stake({}) -- succeeds: {} - {} >= {} committed",
+                    format_usdc(WITHDRAW_AMOUNT),
+                    format_usdc(STAKE_AMOUNT),
+                    format_usdc(WITHDRAW_AMOUNT),
+                    format_usdc(TOTAL_COMMITTED)
+                ),
+                &signature,
+            );
         }
+
+        println!(
+            "Attempting to withdraw another {}, which the cap must refuse...",
+            format_usdc(WITHDRAW_ATTEMPT_TOO_MUCH)
+        );
+        {
+            let instruction = Instruction::new_with_bytes(
+                program_id,
+                &truststake::instruction::WithdrawStake { amount: WITHDRAW_ATTEMPT_TOO_MUCH }.data(),
+                truststake::accounts::WithdrawStakeAccountConstraints {
+                    seller: seller.pubkey(),
+                    stake,
+                    stake_vault,
+                    mint,
+                    seller_token_account,
+                    token_program: spl_token::ID,
+                    event_authority,
+                    program: program_id,
+                }
+                .to_account_metas(None),
+            );
+            // send_allowing_failure, not send: this transaction is SUPPOSED
+            // to fail, and the point is proving the cap is enforced
+            // onchain by the deployed program, for a real fee, rather than
+            // merely rejected by client-side preflight simulation before
+            // anything was spent.
+            let (signature, outcome) = send_allowing_failure(&client, &[instruction], &seller.pubkey(), &[&seller])?;
+            print_step(&format!("withdraw_stake({}) -- must fail", format_usdc(WITHDRAW_ATTEMPT_TOO_MUCH)), &signature);
+            match outcome {
+                Some(TransactionError::InstructionError(_, InstructionError::Custom(code)))
+                    if code == u32::from(TrustStakeError::CommittedExceedsStaked) =>
+                {
+                    println!(
+                        "  Failed exactly as designed: CommittedExceedsStaked (committed collateral \
+                         would exceed staked collateral)"
+                    );
+                }
+                Some(other) => {
+                    return Err(format!("expected CommittedExceedsStaked, got a different onchain failure: {other:?}").into());
+                }
+                None => return Err("expected the second withdrawal to fail onchain, but it succeeded".into()),
+            }
+        }
+        set_bool(&mut progress, "step6_withdraw_demo_done", true);
+        save_progress(&progress)?;
     }
     println!();
 
     // ==================== Step 7: a buyer disputes an order on CashDesk ====================
-    println!("=== Step 7: a CashDesk buyer disputes a {} order ===", format_usdc(ORDER_AMOUNT));
-    let order_id = Keypair::new().pubkey().to_bytes();
-    let issued_at = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system time must be after the unix epoch")
-        .as_secs() as i64;
-    let receipt = OrderReceipt {
-        domain: RECEIPT_DOMAIN,
-        program_id,
-        chain_id: DEVNET_CHAIN_ID,
-        marketplace_id: cashdesk_id,
-        seller: seller.pubkey(),
-        buyer: buyer.pubkey(),
-        order_id,
-        amount: ORDER_AMOUNT,
-        issued_at,
-        expires_at: issued_at + 7 * SECONDS_PER_DAY,
-    };
-    // Build the signed bytes with OrderReceipt::message(), never by hand:
-    // the Ed25519 header below asserts message_data_size EXACTLY, and every
-    // field of OrderReceipt is fixed-width for that reason (src/receipt.rs).
-    let message = receipt.message();
-    let signature_bytes: [u8; 64] = cashdesk_receipt_signer.sign_message(&message).into();
-    let verify_instruction =
-        new_ed25519_instruction_with_signature(&message, &signature_bytes, &cashdesk_receipt_signer.pubkey().to_bytes());
-
-    let cashdesk_permit =
-        Pubkey::find_program_address(&[PERMIT_SEED, SEED_VERSION, seller.pubkey().as_ref(), cashdesk.as_ref()], &program_id)
-            .0;
-    let dispute = Pubkey::find_program_address(
-        &[DISPUTE_SEED, SEED_VERSION, cashdesk.as_ref(), seller.pubkey().as_ref(), order_id.as_ref()],
-        &program_id,
-    )
-    .0;
-    let cashdesk_bond_vault =
-        Pubkey::find_program_address(&[BOND_VAULT_SEED, SEED_VERSION, cashdesk.as_ref()], &program_id).0;
-    let raise_dispute_instruction = Instruction::new_with_bytes(
-        program_id,
-        &truststake::instruction::RaiseDispute { order_id, claim: CLAIM_AMOUNT }.data(),
-        truststake::accounts::RaiseDisputeAccountConstraints {
+    println!("=== Step 7: a CashDesk buyer disputes a {} order (one-time demo) ===", format_usdc(ORDER_AMOUNT));
+    let original_dispute =
+        find_dispute_by_marketplace_seller_status(&chain, cashdesk, seller.pubkey(), DisputeStatus::Upheld)?;
+    if original_dispute.is_none() {
+        let order_id = Keypair::new().pubkey().to_bytes();
+        let issued_at = now_unix();
+        let receipt = OrderReceipt {
+            domain: RECEIPT_DOMAIN,
+            program_id,
+            chain_id: DEVNET_CHAIN_ID,
+            marketplace_id: cashdesk_id,
+            seller: seller.pubkey(),
             buyer: buyer.pubkey(),
-            config,
-            marketplace: cashdesk,
-            stake,
-            permit: cashdesk_permit,
-            dispute,
-            bond_vault: cashdesk_bond_vault,
-            mint,
-            buyer_token_account,
-            instructions_sysvar: solana_instructions_sysvar::ID,
-            token_program: spl_token::ID,
-            system_program: anchor_lang::system_program::ID,
-            event_authority,
-            program: program_id,
-        }
-        .to_account_metas(None),
-    );
-    // The Ed25519 verify instruction MUST sit immediately before
-    // raise_dispute in the same transaction: raise_dispute derives its
-    // position as current_index - 1 (docs/DESIGN-v2.md, "raise_dispute, the
-    // one with real complexity", check 1). They cannot be split across two
-    // transactions.
-    let signature = send(&client, &[verify_instruction, raise_dispute_instruction], &buyer.pubkey(), &[&buyer])?;
-    print_step("[Ed25519 verify, raise_dispute]", &signature);
+            order_id,
+            amount: ORDER_AMOUNT,
+            issued_at,
+            expires_at: issued_at + 7 * SECONDS_PER_DAY,
+        };
+        // Build the signed bytes with OrderReceipt::message(), never by
+        // hand: the Ed25519 header below asserts message_data_size
+        // EXACTLY, and every field of OrderReceipt is fixed-width for that
+        // reason (src/receipt.rs).
+        let message = receipt.message();
+        let signature_bytes: [u8; 64] = cashdesk_receipt_signer.sign_message(&message).into();
+        let verify_instruction = new_ed25519_instruction_with_signature(
+            &message,
+            &signature_bytes,
+            &cashdesk_receipt_signer.pubkey().to_bytes(),
+        );
 
-    // CashDesk's arbiter resolves upheld. admin is the fee payer;
-    // cashdesk_arbiter only co-signs, since resolve_dispute's `arbiter`
-    // account is never `mut` -- it authorizes the ruling and pays nothing,
-    // which is exactly the "trusted judge, not a funded participant" role
-    // decision 2 (docs/DESIGN-v2.md) describes.
-    let resolve_instruction = Instruction::new_with_bytes(
-        program_id,
-        &truststake::instruction::ResolveDispute { upheld: true }.data(),
-        truststake::accounts::ResolveDisputeAccountConstraints {
-            arbiter: cashdesk_arbiter.pubkey(),
-            marketplace: cashdesk,
-            dispute,
-            permit: cashdesk_permit,
-            stake,
-            stake_vault,
-            bond_vault: cashdesk_bond_vault,
-            mint,
-            buyer_token_account,
-            token_program: spl_token::ID,
-            event_authority,
-            program: program_id,
-        }
-        .to_account_metas(None),
-    );
-    let signature = send(&client, &[resolve_instruction], &admin.pubkey(), &[&admin, &cashdesk_arbiter])?;
-    print_step("resolve_dispute(upheld = true)", &signature);
-    println!("CashDesk upheld the claim; see the payout reflected in CashDesk's permit below.");
+        let cashdesk_permit = permit_pda(program_id, seller.pubkey(), cashdesk);
+        let dispute = dispute_pda(program_id, cashdesk, seller.pubkey(), order_id);
+        let cashdesk_bond_vault = bond_vault_pda(program_id, cashdesk);
+        let raise_dispute_instruction = Instruction::new_with_bytes(
+            program_id,
+            &truststake::instruction::RaiseDispute { order_id, claim: CLAIM_AMOUNT }.data(),
+            truststake::accounts::RaiseDisputeAccountConstraints {
+                buyer: buyer.pubkey(),
+                config,
+                marketplace: cashdesk,
+                stake,
+                permit: cashdesk_permit,
+                dispute,
+                bond_vault: cashdesk_bond_vault,
+                mint,
+                buyer_token_account,
+                instructions_sysvar: solana_instructions_sysvar::ID,
+                token_program: spl_token::ID,
+                system_program: anchor_lang::system_program::ID,
+                event_authority,
+                program: program_id,
+            }
+            .to_account_metas(None),
+        );
+        // The Ed25519 verify instruction MUST sit immediately before
+        // raise_dispute in the same transaction: raise_dispute derives its
+        // position as current_index - 1 (docs/DESIGN-v2.md, "raise_dispute,
+        // the one with real complexity", check 1). They cannot be split
+        // across two transactions.
+        let signature = send(&client, &[verify_instruction, raise_dispute_instruction], &buyer.pubkey(), &[&buyer])?;
+        print_step("[Ed25519 verify, raise_dispute]", &signature);
+
+        // CashDesk's arbiter resolves upheld. admin is the fee payer;
+        // cashdesk_arbiter only co-signs, since resolve_dispute's `arbiter`
+        // account is never `mut` -- it authorizes the ruling and pays
+        // nothing, which is exactly the "trusted judge, not a funded
+        // participant" role decision 2 (docs/DESIGN-v2.md) describes.
+        let resolve_instruction = Instruction::new_with_bytes(
+            program_id,
+            &truststake::instruction::ResolveDispute { upheld: true }.data(),
+            truststake::accounts::ResolveDisputeAccountConstraints {
+                arbiter: cashdesk_arbiter.pubkey(),
+                marketplace: cashdesk,
+                dispute,
+                permit: cashdesk_permit,
+                stake,
+                stake_vault,
+                bond_vault: cashdesk_bond_vault,
+                mint,
+                buyer_token_account,
+                token_program: spl_token::ID,
+                event_authority,
+                program: program_id,
+            }
+            .to_account_metas(None),
+        );
+        let signature = send(&client, &[resolve_instruction], &admin.pubkey(), &[&admin, &cashdesk_arbiter])?;
+        print_step("resolve_dispute(upheld = true)", &signature);
+        println!("CashDesk upheld the claim; see the payout reflected in CashDesk's permit below.");
+    } else {
+        println!("Already demonstrated in a previous run (an Upheld dispute against CashDesk for this seller already exists), skipping.");
+    }
     println!();
 
     // ==================== Step 8: the payoff -- one slashed, one untouched ====================
-    println!("=== Step 8: final state of both permits ===");
+    println!("=== Step 8: final state of both original permits ===");
+    let cashdesk_permit = permit_pda(program_id, seller.pubkey(), cashdesk);
+    let pixelbazaar_permit = permit_pda(program_id, seller.pubkey(), pixelbazaar);
     let cashdesk_permit_state = read_permit(&client, &cashdesk_permit)?;
-    let pixelbazaar_permit_pda =
-        Pubkey::find_program_address(&[PERMIT_SEED, SEED_VERSION, seller.pubkey().as_ref(), pixelbazaar.as_ref()], &program_id)
-            .0;
-    let pixelbazaar_permit_state = read_permit(&client, &pixelbazaar_permit_pda)?;
+    let pixelbazaar_permit_state = read_permit(&client, &pixelbazaar_permit)?;
 
     if cashdesk_permit_state.slashed != CLAIM_AMOUNT {
         return Err(format!(
@@ -591,25 +798,68 @@ fn main() -> Result<(), Box<dyn Error>> {
         format_usdc(pixelbazaar_permit_state.slashed),
         format_usdc(pixelbazaar_permit_state.max_slashable - pixelbazaar_permit_state.slashed),
     );
-    println!(
-        "  Same seller, same stake, two independent caps: CashDesk's slashed rose to {}; \
-         PixelBazaar's is still untouched at {} remaining.",
-        format_usdc(cashdesk_permit_state.slashed),
-        format_usdc(pixelbazaar_permit_state.max_slashable),
-    );
     println!();
-    println!(
-        "The walk stops here: release_permit needs revoked_at + complaint_window to elapse \
-         (complaint_window is floored at MIN_COMPLAINT_WINDOW_SECONDS = {MIN_COMPLAINT_WINDOW_SECONDS} \
-         seconds, 2 days), and release_permit_early still needs CLOCK_SKEW_TOLERANCE_SECONDS \
-         ({CLOCK_SKEW_TOLERANCE_SECONDS} seconds, one hour) after revocation. Neither fits a \
-         single run of this script. Both are exercised in tests/test_phase2.rs instead."
-    );
+
+    // ==================== Stages 1-4 ====================
+    let roster = StageRoster {
+        admin: &admin,
+        seller: &seller,
+        buyer: &buyer,
+        seller_token_account,
+        buyer_token_account,
+        cashdesk,
+        cashdesk_id,
+        cashdesk_authority: &cashdesk_authority,
+        cashdesk_receipt_signer: &cashdesk_receipt_signer,
+        cashdesk_arbiter: &cashdesk_arbiter,
+        pixelbazaar,
+        pixelbazaar_authority: &pixelbazaar_authority,
+        stake,
+    };
+
+    if should_run(1) {
+        run_stage_1(&chain, &mut progress, &roster)?;
+        save_progress(&progress)?;
+        println!();
+    }
+    if should_run(2) {
+        run_stage_2(&chain, &progress, &roster)?;
+        println!();
+    }
+    if should_run(3) {
+        run_stage_3(&chain, &progress, &roster)?;
+        println!();
+    }
+    if should_run(4) {
+        run_stage_4(&chain, &progress, &roster)?;
+        println!();
+    }
 
     Ok(())
 }
 
-/// Funds every wallet that pays rent or a transaction fee of its own.
+/// The values stage 1-4 functions need from the original eight-step walk.
+/// Bundled for the same reason `Chain` is: these functions already take
+/// several stage-specific parameters of their own.
+struct StageRoster<'a> {
+    admin: &'a Keypair,
+    seller: &'a Keypair,
+    buyer: &'a Keypair,
+    seller_token_account: Pubkey,
+    buyer_token_account: Pubkey,
+    cashdesk: Pubkey,
+    cashdesk_id: [u8; 16],
+    cashdesk_authority: &'a Keypair,
+    cashdesk_receipt_signer: &'a Keypair,
+    cashdesk_arbiter: &'a Keypair,
+    pixelbazaar: Pubkey,
+    pixelbazaar_authority: &'a Keypair,
+    stake: Pubkey,
+}
+
+/// Funds every wallet that pays rent or a transaction fee of its own, each
+/// topped up to its target balance rather than sent a fixed amount
+/// unconditionally, so a resumed run funds only the shortfall (or nothing).
 /// Receipt signers and arbiters are deliberately excluded: neither ever
 /// pays for anything (see the printed roster note in `main`).
 fn fund_wallets(
@@ -629,91 +879,139 @@ fn fund_wallets(
     let dispute_rent =
         client.get_minimum_balance_for_rent_exemption(DisputeRecord::DISCRIMINATOR.len() + DisputeRecord::INIT_SPACE)?;
 
-    // Seller signs 6 transactions: initialize_stake (pays stake_rent AND
-    // stake_vault's token_account_rent together), add_stake, two
-    // grant_permit calls (each pays permit_rent), and two withdraw_stake
-    // calls -- the second of which is expected to fail, but a transaction
-    // that fails onchain execution still pays its base fee.
+    // Seller signs 6 transactions across the original walk:
+    // initialize_stake (pays stake_rent AND stake_vault's
+    // token_account_rent together), add_stake, two grant_permit calls
+    // (each pays permit_rent), and two withdraw_stake calls -- the second
+    // of which is expected to fail, but a transaction that fails onchain
+    // execution still pays its base fee. Stage 1 funds its own additional
+    // seller transactions separately (fund_wallets_stage1).
     let seller_funding = stake_rent + token_account_rent + 2 * permit_rent + 6 * SIGNATURE_FEE_HEADROOM + wallet_rent_floor;
-    let signature = transfer_sol(client, admin, &seller.pubkey(), seller_funding)?;
-    print_step(&format!("Fund seller ({} lamports)", seller_funding), &signature);
+    top_up_balance(client, admin, &seller.pubkey(), seller_funding, "seller")?;
 
     // Buyer signs 1 transaction: raise_dispute (two instructions, one
     // signature), which pays dispute_rent.
     let buyer_funding = dispute_rent + SIGNATURE_FEE_HEADROOM + wallet_rent_floor;
-    let signature = transfer_sol(client, admin, &buyer.pubkey(), buyer_funding)?;
-    print_step(&format!("Fund buyer ({} lamports)", buyer_funding), &signature);
+    top_up_balance(client, admin, &buyer.pubkey(), buyer_funding, "buyer")?;
 
     // Each marketplace authority signs 1 transaction: register_marketplace,
     // which pays rent for both the marketplace account and its bond_vault.
     let marketplace_authority_funding = marketplace_rent + token_account_rent + SIGNATURE_FEE_HEADROOM + wallet_rent_floor;
-    let signature = transfer_sol(client, admin, &cashdesk_authority.pubkey(), marketplace_authority_funding)?;
-    print_step(&format!("Fund CashDesk authority ({} lamports)", marketplace_authority_funding), &signature);
-    let signature = transfer_sol(client, admin, &pixelbazaar_authority.pubkey(), marketplace_authority_funding)?;
-    print_step(&format!("Fund PixelBazaar authority ({} lamports)", marketplace_authority_funding), &signature);
+    top_up_balance(client, admin, &cashdesk_authority.pubkey(), marketplace_authority_funding, "CashDesk authority")?;
+    top_up_balance(client, admin, &pixelbazaar_authority.pubkey(), marketplace_authority_funding, "PixelBazaar authority")?;
     println!();
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
-fn register_marketplace(
-    client: &RpcClient,
-    program_id: Pubkey,
-    config: Pubkey,
-    mint: Pubkey,
-    event_authority: Pubkey,
-    authority: &Keypair,
-    marketplace_id: [u8; 16],
-    receipt_signer: Pubkey,
-    arbiter: Pubkey,
-    complaint_window: i64,
-    bond_bps: u16,
-    name: &str,
-) -> Result<Pubkey, Box<dyn Error>> {
-    let marketplace = Pubkey::find_program_address(&[MARKETPLACE_SEED, SEED_VERSION, marketplace_id.as_ref()], &program_id).0;
-    let bond_vault = Pubkey::find_program_address(&[BOND_VAULT_SEED, SEED_VERSION, marketplace.as_ref()], &program_id).0;
-
-    let instruction = Instruction::new_with_bytes(
-        program_id,
-        &truststake::instruction::RegisterMarketplace { marketplace_id, receipt_signer, arbiter, complaint_window, bond_bps }
-            .data(),
-        truststake::accounts::RegisterMarketplaceAccountConstraints {
-            authority: authority.pubkey(),
-            config,
-            mint,
-            marketplace,
-            bond_vault,
-            token_program: spl_token::ID,
-            system_program: anchor_lang::system_program::ID,
-            event_authority,
-            program: program_id,
-        }
-        .to_account_metas(None),
-    );
-
-    let signature = send(client, &[instruction], &authority.pubkey(), &[authority])?;
-    print_step(
-        &format!("register_marketplace({name}, window = {} days, bond = {} bps)", complaint_window / SECONDS_PER_DAY, bond_bps),
-        &signature,
-    );
-    Ok(marketplace)
+/// Transfers `admin -> to` only the shortfall needed to reach `target`
+/// lamports, skipping entirely if `to` is already funded. This is what
+/// makes every funding call in this file safe to repeat on every
+/// invocation rather than only the first.
+fn top_up_balance(client: &RpcClient, admin: &Keypair, to: &Pubkey, target: u64, label: &str) -> Result<(), Box<dyn Error>> {
+    let current = client.get_balance(to)?;
+    if current >= target {
+        println!("Fund {label}: already at {current} lamports (target {target}), skipping");
+        return Ok(());
+    }
+    let shortfall = target - current;
+    let signature = transfer_sol(client, admin, to, shortfall)?;
+    print_step(&format!("Fund {label} ({shortfall} lamports, topping up to {target})"), &signature);
+    Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
-fn grant_permit(
+/// Mints only the shortfall needed for `token_account` to hold at least
+/// `target` minor units, skipping entirely if it already does.
+fn top_up_token_balance(client: &RpcClient, mint_authority: &Keypair, mint: &Pubkey, token_account: &Pubkey, target: u64) -> Result<(), Box<dyn Error>> {
+    let current = read_token_balance(client, token_account)?;
+    if current >= target {
+        return Ok(());
+    }
+    let shortfall = target - current;
+    let signature = mint_to_account(client, mint_authority, mint, token_account, shortfall)?;
+    print_step(&format!("Mint {} to {token_account}", format_usdc(shortfall)), &signature);
+    Ok(())
+}
+
+fn read_token_balance(client: &RpcClient, token_account: &Pubkey) -> Result<u64, Box<dyn Error>> {
+    let account = client.get_account(token_account)?;
+    Ok(spl_token::state::Account::unpack(&account.data)
+        .map_err(|error| format!("failed to unpack token account {token_account}: {error}"))?
+        .amount)
+}
+
+/// Finds an existing token account for `owner` under `mint` (via
+/// `getTokenAccountsByOwner`, filtered server-side) and persists it, or
+/// creates and persists a new one if none exists. The persisted file is
+/// what makes every later invocation reuse the SAME token account rather
+/// than the on-chain scan being needed every time; the scan itself is what
+/// recovers the seller's and buyer's real token accounts from the
+/// 2026-08-24 run, which predates this persistence file existing at all
+/// (see the module doc comment's "Resumability" section).
+fn load_or_find_or_create_token_account(
     client: &RpcClient,
-    program_id: Pubkey,
-    event_authority: Pubkey,
+    dir: &Path,
+    name: &str,
+    payer: &Keypair,
+    mint: &Pubkey,
+    owner: &Pubkey,
+) -> Result<Pubkey, Box<dyn Error>> {
+    let path = dir.join(format!("{name}_token_account.pubkey"));
+    if path.exists() {
+        let text = fs::read_to_string(&path).map_err(|error| format!("failed to read {path:?}: {error}"))?;
+        let pubkey: Pubkey = text.trim().parse().map_err(|error| format!("invalid pubkey in {path:?}: {error}"))?;
+        return Ok(pubkey);
+    }
+
+    let existing = client.get_token_accounts_by_owner(owner, TokenAccountsFilter::Mint(*mint))?;
+    let token_account = if let Some(entry) = existing.first() {
+        let pubkey: Pubkey = entry
+            .pubkey
+            .parse()
+            .map_err(|error| format!("RPC returned an invalid pubkey {:?}: {error}", entry.pubkey))?;
+        println!("Recovered existing {name} token account from chain: {pubkey}");
+        pubkey
+    } else {
+        let (token_account, signature) = create_token_account(client, payer, mint, owner)?;
+        print_step(&format!("Create {name} token account"), &signature);
+        token_account
+    };
+
+    fs::write(&path, token_account.to_string()).map_err(|error| format!("failed to write {path:?}: {error}"))?;
+    Ok(token_account)
+}
+
+/// Grants `permit` for `marketplace` if it does not already exist. Every
+/// `grant_permit` call in the original walk uses Anchor's `init`, which
+/// hard-errors against an already-occupied PDA, so this existence check is
+/// what makes the original walk's Step 5 safe to repeat.
+fn ensure_permit(
+    chain: &Chain,
     seller: &Keypair,
     stake: Pubkey,
     marketplace: Pubkey,
     max_slashable: u64,
     name: &str,
 ) -> Result<(), Box<dyn Error>> {
-    let permit = Pubkey::find_program_address(&[PERMIT_SEED, SEED_VERSION, seller.pubkey().as_ref(), marketplace.as_ref()], &program_id).0;
+    let permit = permit_pda(chain.program_id, seller.pubkey(), marketplace);
+    if chain.client.get_account(&permit).is_ok() {
+        println!("grant_permit({name}): already granted, skipping");
+        return Ok(());
+    }
+    let signature = send_grant_permit(chain, seller, stake, marketplace, max_slashable)?;
+    print_step(&format!("grant_permit({name}, {})", format_usdc(max_slashable)), &signature);
+    Ok(())
+}
 
+fn send_grant_permit(
+    chain: &Chain,
+    seller: &Keypair,
+    stake: Pubkey,
+    marketplace: Pubkey,
+    max_slashable: u64,
+) -> Result<Signature, Box<dyn Error>> {
+    let permit = permit_pda(chain.program_id, seller.pubkey(), marketplace);
     let instruction = Instruction::new_with_bytes(
-        program_id,
+        chain.program_id,
         &truststake::instruction::GrantPermit { max_slashable }.data(),
         truststake::accounts::GrantPermitAccountConstraints {
             seller: seller.pubkey(),
@@ -721,15 +1019,138 @@ fn grant_permit(
             marketplace,
             permit,
             system_program: anchor_lang::system_program::ID,
-            event_authority,
-            program: program_id,
+            event_authority: chain.event_authority,
+            program: chain.program_id,
+        }
+        .to_account_metas(None),
+    );
+    send(chain.client, &[instruction], &seller.pubkey(), &[seller])
+}
+
+/// Registers a new marketplace tenant, deriving its `bond_vault` PDA
+/// alongside it.
+#[allow(clippy::too_many_arguments)]
+fn send_register_marketplace(
+    chain: &Chain,
+    authority: &Keypair,
+    marketplace_id: [u8; 16],
+    receipt_signer: Pubkey,
+    arbiter: Pubkey,
+    complaint_window: i64,
+    bond_bps: u16,
+) -> Result<(Pubkey, Signature), Box<dyn Error>> {
+    let marketplace = marketplace_pda(chain.program_id, marketplace_id);
+    let bond_vault = bond_vault_pda(chain.program_id, marketplace);
+
+    let instruction = Instruction::new_with_bytes(
+        chain.program_id,
+        &truststake::instruction::RegisterMarketplace { marketplace_id, receipt_signer, arbiter, complaint_window, bond_bps }
+            .data(),
+        truststake::accounts::RegisterMarketplaceAccountConstraints {
+            authority: authority.pubkey(),
+            config: chain.config,
+            mint: chain.mint,
+            marketplace,
+            bond_vault,
+            token_program: spl_token::ID,
+            system_program: anchor_lang::system_program::ID,
+            event_authority: chain.event_authority,
+            program: chain.program_id,
         }
         .to_account_metas(None),
     );
 
-    let signature = send(client, &[instruction], &seller.pubkey(), &[seller])?;
-    print_step(&format!("grant_permit({name}, {})", format_usdc(max_slashable)), &signature);
-    Ok(())
+    let signature = send(chain.client, &[instruction], &authority.pubkey(), &[authority])?;
+    Ok((marketplace, signature))
+}
+
+/// Recovers CashDesk/PixelBazaar's real onchain identity, chosen randomly
+/// by the pre-persistence `random_marketplace_id()` on the 2026-08-24 run
+/// (see the module doc comment). Order of preference: the progress file's
+/// cache (fast path, valid once discovered or created at least once under
+/// this revision), then an onchain scan of the program's own accounts
+/// matching by `authority` (the recovery path, needed exactly once), then
+/// registering fresh with a new random ID (the only path a genuinely new
+/// deployment would take).
+#[allow(clippy::too_many_arguments)]
+fn find_or_register_legacy_marketplace(
+    chain: &Chain,
+    progress: &mut Value,
+    progress_key: &str,
+    authority: &Keypair,
+    receipt_signer: Pubkey,
+    arbiter: Pubkey,
+    complaint_window: i64,
+    bond_bps: u16,
+    name: &str,
+) -> Result<(Pubkey, [u8; 16]), Box<dyn Error>> {
+    if let Some(id) = get_bytes16(progress, progress_key) {
+        let marketplace = marketplace_pda(chain.program_id, id);
+        if chain.client.get_account(&marketplace).is_ok() {
+            println!("{name}: using cached marketplace id from {}", progress_path().display());
+            return Ok((marketplace, id));
+        }
+        println!("{name}: cached marketplace id in progress.json does not exist onchain; re-discovering");
+    }
+
+    if let Some((id, marketplace)) = find_marketplace_by_authority(chain, authority.pubkey())? {
+        println!("{name}: recovered existing marketplace from chain (authority match): {marketplace}");
+        set_bytes16(progress, progress_key, id);
+        return Ok((marketplace, id));
+    }
+
+    let id = random_marketplace_id();
+    let (marketplace, signature) =
+        send_register_marketplace(chain, authority, id, receipt_signer, arbiter, complaint_window, bond_bps)?;
+    print_step(
+        &format!("register_marketplace({name}, window = {} days, bond = {} bps)", complaint_window / SECONDS_PER_DAY, bond_bps),
+        &signature,
+    );
+    set_bytes16(progress, progress_key, id);
+    Ok((marketplace, id))
+}
+
+/// Scans every account the program owns (cheap: a handful of accounts on
+/// this deployment) and returns the first `Marketplace` whose `authority`
+/// matches. `Marketplace::try_deserialize` returns `Err` for any
+/// non-Marketplace account (wrong discriminator) or a stale layout (wrong
+/// size for the current struct, which is how two orphaned v1-era accounts
+/// sharing today's `Config`/`SellerStake` discriminators -- confirmed by
+/// direct inspection of devnet's account list, at different PDAs since v1
+/// predates the `SEED_VERSION` seed component -- are silently skipped
+/// rather than misread.
+#[allow(clippy::type_complexity)]
+fn find_marketplace_by_authority(chain: &Chain, authority: Pubkey) -> Result<Option<([u8; 16], Pubkey)>, Box<dyn Error>> {
+    for (pubkey, account) in chain.client.get_program_accounts(&chain.program_id)? {
+        if let Ok(marketplace) = Marketplace::try_deserialize(&mut account.data.as_slice()) {
+            if marketplace.authority == authority {
+                return Ok(Some((marketplace.marketplace_id, pubkey)));
+            }
+        }
+    }
+    Ok(None)
+}
+
+/// Same scan as `find_marketplace_by_authority`, for `DisputeRecord`
+/// accounts matching `(marketplace, seller, status)`. Used both as the
+/// idempotency gate for the original walk's Step 7 (has the one-time
+/// CashDesk dispute already been raised and upheld) and by stage 4 to
+/// locate the ORIGINAL 2026-08-24 dispute, whose `order_id` -- unlike the
+/// two new disputes stage 1 raises -- was never persisted anywhere.
+fn find_dispute_by_marketplace_seller_status(
+    chain: &Chain,
+    marketplace: Pubkey,
+    seller: Pubkey,
+    status: DisputeStatus,
+) -> Result<Option<(Pubkey, DisputeRecord)>, Box<dyn Error>> {
+    for (pubkey, account) in chain.client.get_program_accounts(&chain.program_id)? {
+        if let Ok(dispute) = DisputeRecord::try_deserialize(&mut account.data.as_slice()) {
+            if dispute.marketplace == marketplace && dispute.seller == seller && dispute.status == status as u8 {
+                return Ok(Some((pubkey, dispute)));
+            }
+        }
+    }
+    Ok(None)
 }
 
 fn read_seller_stake(client: &RpcClient, pubkey: &Pubkey) -> Result<SellerStake, Box<dyn Error>> {
@@ -742,6 +1163,34 @@ fn read_permit(client: &RpcClient, pubkey: &Pubkey) -> Result<SlashPermit, Box<d
     let account = client.get_account(pubkey)?;
     Ok(SlashPermit::try_deserialize(&mut account.data.as_slice())
         .map_err(|error| format!("failed to deserialize SlashPermit at {pubkey}: {error}"))?)
+}
+
+fn try_read_permit(client: &RpcClient, pubkey: &Pubkey) -> Option<SlashPermit> {
+    let account = client.get_account(pubkey).ok()?;
+    SlashPermit::try_deserialize(&mut account.data.as_slice()).ok()
+}
+
+fn read_marketplace(client: &RpcClient, pubkey: &Pubkey) -> Result<Marketplace, Box<dyn Error>> {
+    let account = client.get_account(pubkey)?;
+    Ok(Marketplace::try_deserialize(&mut account.data.as_slice())
+        .map_err(|error| format!("failed to deserialize Marketplace at {pubkey}: {error}"))?)
+}
+
+fn read_config(client: &RpcClient, pubkey: &Pubkey) -> Result<Config, Box<dyn Error>> {
+    let account = client.get_account(pubkey)?;
+    Ok(Config::try_deserialize(&mut account.data.as_slice())
+        .map_err(|error| format!("failed to deserialize Config at {pubkey}: {error}"))?)
+}
+
+fn read_dispute(client: &RpcClient, pubkey: &Pubkey) -> Result<DisputeRecord, Box<dyn Error>> {
+    let account = client.get_account(pubkey)?;
+    Ok(DisputeRecord::try_deserialize(&mut account.data.as_slice())
+        .map_err(|error| format!("failed to deserialize DisputeRecord at {pubkey}: {error}"))?)
+}
+
+fn try_read_dispute(client: &RpcClient, pubkey: &Pubkey) -> Option<DisputeRecord> {
+    let account = client.get_account(pubkey).ok()?;
+    DisputeRecord::try_deserialize(&mut account.data.as_slice()).ok()
 }
 
 /// Creates the demo's own Classic Token Program mint, standing in for
@@ -776,8 +1225,8 @@ fn create_test_mint(client: &RpcClient, authority: &Keypair) -> Result<(Pubkey, 
 /// paid for by `payer`. `owner` never needs to sign: SPL Token's
 /// `InitializeAccount3` writes the owner into the account's data without
 /// requiring the owner's signature, which is what lets `admin` provision
-/// the seller's and buyer's token accounts on their behalf here, the way a
-/// devnet faucet would.
+/// throwaway sellers' and buyers' token accounts on their behalf here, the
+/// way a devnet faucet would.
 fn create_token_account(
     client: &RpcClient,
     payer: &Keypair,
@@ -826,8 +1275,7 @@ fn random_marketplace_id() -> [u8; 16] {
 /// (preflight): a transaction that would fail execution is rejected here
 /// and never reaches the cluster, so it never costs a fee. Every step in
 /// this file that is expected to succeed goes through this function; the
-/// one expected to fail (step 6's second withdrawal) goes through
-/// `send_allowing_failure` instead.
+/// ones expected to fail go through `send_allowing_failure` instead.
 fn send(client: &RpcClient, instructions: &[Instruction], payer: &Pubkey, signers: &[&Keypair]) -> Result<Signature, Box<dyn Error>> {
     let blockhash = client.get_latest_blockhash()?;
     let message = Message::new_with_blockhash(instructions, Some(payer), &blockhash);
@@ -838,10 +1286,9 @@ fn send(client: &RpcClient, instructions: &[Instruction], payer: &Pubkey, signer
 /// Submits without the usual preflight simulation and waits for the
 /// transaction's own onchain outcome, succeed or fail. `send` simulates
 /// first and never lets a failing transaction reach the cluster at all --
-/// exactly wrong for step 6's second withdrawal, whose entire point is
-/// proving `withdraw_stake`'s cap is enforced by the deployed program on
-/// real devnet, at the cost of a real fee, not merely caught by
-/// client-side simulation before anything was spent.
+/// exactly wrong when the whole point is proving a check is enforced by
+/// the deployed program on real devnet, at the cost of a real fee, not
+/// merely caught by client-side simulation before anything was spent.
 fn send_allowing_failure(
     client: &RpcClient,
     instructions: &[Instruction],
@@ -871,4 +1318,1154 @@ fn transfer_sol(client: &RpcClient, from: &Keypair, to: &Pubkey, lamports: u64) 
 fn print_step(label: &str, signature: &Signature) {
     println!("{label}: {signature}");
     println!("  https://explorer.solana.com/tx/{signature}?cluster=devnet");
+}
+
+// ==================== Instruction senders for the 11 handlers new to this file ====================
+
+fn send_propose_config_authority(chain: &Chain, authority: &Keypair, new_authority: Pubkey) -> Result<Signature, Box<dyn Error>> {
+    let instruction = Instruction::new_with_bytes(
+        chain.program_id,
+        &truststake::instruction::ProposeConfigAuthority { new_authority }.data(),
+        truststake::accounts::ProposeConfigAuthorityAccountConstraints {
+            authority: authority.pubkey(),
+            config: chain.config,
+            event_authority: chain.event_authority,
+            program: chain.program_id,
+        }
+        .to_account_metas(None),
+    );
+    send(chain.client, &[instruction], &authority.pubkey(), &[authority])
+}
+
+fn send_accept_config_authority(chain: &Chain, pending_authority: &Keypair) -> Result<Signature, Box<dyn Error>> {
+    let instruction = Instruction::new_with_bytes(
+        chain.program_id,
+        &truststake::instruction::AcceptConfigAuthority {}.data(),
+        truststake::accounts::AcceptConfigAuthorityAccountConstraints {
+            pending_authority: pending_authority.pubkey(),
+            config: chain.config,
+            event_authority: chain.event_authority,
+            program: chain.program_id,
+        }
+        .to_account_metas(None),
+    );
+    send(chain.client, &[instruction], &pending_authority.pubkey(), &[pending_authority])
+}
+
+#[allow(clippy::too_many_arguments)]
+fn send_update_marketplace(
+    chain: &Chain,
+    authority: &Keypair,
+    marketplace: Pubkey,
+    new_receipt_signer: Option<Pubkey>,
+    new_arbiter: Option<Pubkey>,
+    new_complaint_window: Option<i64>,
+    new_bond_bps: Option<u16>,
+) -> Result<Signature, Box<dyn Error>> {
+    let instruction = Instruction::new_with_bytes(
+        chain.program_id,
+        &truststake::instruction::UpdateMarketplace { new_receipt_signer, new_arbiter, new_complaint_window, new_bond_bps }.data(),
+        truststake::accounts::UpdateMarketplaceAccountConstraints {
+            authority: authority.pubkey(),
+            marketplace,
+            event_authority: chain.event_authority,
+            program: chain.program_id,
+        }
+        .to_account_metas(None),
+    );
+    send(chain.client, &[instruction], &authority.pubkey(), &[authority])
+}
+
+fn send_propose_marketplace_authority(
+    chain: &Chain,
+    authority: &Keypair,
+    marketplace: Pubkey,
+    new_authority: Pubkey,
+) -> Result<Signature, Box<dyn Error>> {
+    let instruction = Instruction::new_with_bytes(
+        chain.program_id,
+        &truststake::instruction::ProposeMarketplaceAuthority { new_authority }.data(),
+        truststake::accounts::ProposeMarketplaceAuthorityAccountConstraints {
+            authority: authority.pubkey(),
+            marketplace,
+            event_authority: chain.event_authority,
+            program: chain.program_id,
+        }
+        .to_account_metas(None),
+    );
+    send(chain.client, &[instruction], &authority.pubkey(), &[authority])
+}
+
+fn send_accept_marketplace_authority(chain: &Chain, pending_authority: &Keypair, marketplace: Pubkey) -> Result<Signature, Box<dyn Error>> {
+    let instruction = Instruction::new_with_bytes(
+        chain.program_id,
+        &truststake::instruction::AcceptMarketplaceAuthority {}.data(),
+        truststake::accounts::AcceptMarketplaceAuthorityAccountConstraints {
+            pending_authority: pending_authority.pubkey(),
+            marketplace,
+            event_authority: chain.event_authority,
+            program: chain.program_id,
+        }
+        .to_account_metas(None),
+    );
+    send(chain.client, &[instruction], &pending_authority.pubkey(), &[pending_authority])
+}
+
+fn send_increase_permit(chain: &Chain, seller: &Keypair, stake: Pubkey, marketplace: Pubkey, delta: u64) -> Result<Signature, Box<dyn Error>> {
+    let permit = permit_pda(chain.program_id, seller.pubkey(), marketplace);
+    let instruction = Instruction::new_with_bytes(
+        chain.program_id,
+        &truststake::instruction::IncreasePermit { delta }.data(),
+        truststake::accounts::IncreasePermitAccountConstraints {
+            seller: seller.pubkey(),
+            stake,
+            permit,
+            event_authority: chain.event_authority,
+            program: chain.program_id,
+        }
+        .to_account_metas(None),
+    );
+    send(chain.client, &[instruction], &seller.pubkey(), &[seller])
+}
+
+fn send_revoke_permit(chain: &Chain, seller: &Keypair, marketplace: Pubkey) -> Result<Signature, Box<dyn Error>> {
+    let permit = permit_pda(chain.program_id, seller.pubkey(), marketplace);
+    let instruction = Instruction::new_with_bytes(
+        chain.program_id,
+        &truststake::instruction::RevokePermit {}.data(),
+        truststake::accounts::RevokePermitAccountConstraints {
+            seller: seller.pubkey(),
+            permit,
+            event_authority: chain.event_authority,
+            program: chain.program_id,
+        }
+        .to_account_metas(None),
+    );
+    send(chain.client, &[instruction], &seller.pubkey(), &[seller])
+}
+
+/// `caller` pays and need not be `seller`: release_permit is permissionless
+/// by design. `seller` is the pubkey (not necessarily a signer here).
+fn send_release_permit(chain: &Chain, caller: &Keypair, seller: Pubkey, marketplace: Pubkey) -> Result<Signature, Box<dyn Error>> {
+    let permit = permit_pda(chain.program_id, seller, marketplace);
+    let stake = stake_pda(chain.program_id, seller);
+    let instruction = Instruction::new_with_bytes(
+        chain.program_id,
+        &truststake::instruction::ReleasePermit {}.data(),
+        truststake::accounts::ReleasePermitAccountConstraints {
+            caller: caller.pubkey(),
+            seller,
+            permit,
+            stake,
+            event_authority: chain.event_authority,
+            program: chain.program_id,
+        }
+        .to_account_metas(None),
+    );
+    send(chain.client, &[instruction], &caller.pubkey(), &[caller])
+}
+
+/// Both `seller` and the marketplace's current `authority` must sign;
+/// `seller` pays.
+fn send_release_permit_early(chain: &Chain, seller: &Keypair, authority: &Keypair, marketplace: Pubkey) -> Result<Signature, Box<dyn Error>> {
+    let permit = permit_pda(chain.program_id, seller.pubkey(), marketplace);
+    let stake = stake_pda(chain.program_id, seller.pubkey());
+    let instruction = Instruction::new_with_bytes(
+        chain.program_id,
+        &truststake::instruction::ReleasePermitEarly {}.data(),
+        truststake::accounts::ReleasePermitEarlyAccountConstraints {
+            seller: seller.pubkey(),
+            authority: authority.pubkey(),
+            marketplace,
+            permit,
+            stake,
+            event_authority: chain.event_authority,
+            program: chain.program_id,
+        }
+        .to_account_metas(None),
+    );
+    send(chain.client, &[instruction], &seller.pubkey(), &[seller, authority])
+}
+
+/// Permissionless; `caller` pays. `dispute` and `permit` are passed in
+/// (rather than re-derived) since the caller already had to read the
+/// dispute record to find its `expires_at`.
+fn send_expire_dispute(
+    chain: &Chain,
+    caller: &Keypair,
+    marketplace: Pubkey,
+    dispute: Pubkey,
+    permit: Pubkey,
+    buyer_token_account: Pubkey,
+) -> Result<Signature, Box<dyn Error>> {
+    let bond_vault = bond_vault_pda(chain.program_id, marketplace);
+    let instruction = Instruction::new_with_bytes(
+        chain.program_id,
+        &truststake::instruction::ExpireDispute {}.data(),
+        truststake::accounts::ExpireDisputeAccountConstraints {
+            caller: caller.pubkey(),
+            marketplace,
+            dispute,
+            permit,
+            bond_vault,
+            mint: chain.mint,
+            buyer_token_account,
+            token_program: spl_token::ID,
+            event_authority: chain.event_authority,
+            program: chain.program_id,
+        }
+        .to_account_metas(None),
+    );
+    send(chain.client, &[instruction], &caller.pubkey(), &[caller])
+}
+
+/// Permissionless; `caller` pays. `buyer` is the rent destination, read
+/// off the dispute record by the caller rather than assumed.
+fn send_close_dispute(chain: &Chain, caller: &Keypair, buyer: Pubkey, dispute: Pubkey) -> Result<Signature, Box<dyn Error>> {
+    let instruction = Instruction::new_with_bytes(
+        chain.program_id,
+        &truststake::instruction::CloseDispute {}.data(),
+        truststake::accounts::CloseDisputeAccountConstraints {
+            caller: caller.pubkey(),
+            buyer,
+            dispute,
+            event_authority: chain.event_authority,
+            program: chain.program_id,
+        }
+        .to_account_metas(None),
+    );
+    send(chain.client, &[instruction], &caller.pubkey(), &[caller])
+}
+
+// ==================== Stage 1 ====================
+
+/// Counts the transactions and new rent-exempt accounts a from-scratch
+/// stage 1 run creates and prints an estimated total cost, all read from
+/// live rent rates rather than hardcoded lamport figures. A resumed run
+/// that already completed part of stage 1 spends less than this estimate;
+/// it is informational, not a gate (the task's own framing).
+fn print_stage1_cost_estimate(chain: &Chain) -> Result<(), Box<dyn Error>> {
+    let wallet_rent_floor = chain.client.get_minimum_balance_for_rent_exemption(0)?;
+    let token_account_rent = chain.client.get_minimum_balance_for_rent_exemption(spl_token::state::Account::LEN)?;
+    let marketplace_rent =
+        chain.client.get_minimum_balance_for_rent_exemption(Marketplace::DISCRIMINATOR.len() + Marketplace::INIT_SPACE)?;
+    let stake_rent = chain.client.get_minimum_balance_for_rent_exemption(SellerStake::DISCRIMINATOR.len() + SellerStake::INIT_SPACE)?;
+    let permit_rent = chain.client.get_minimum_balance_for_rent_exemption(SlashPermit::DISCRIMINATOR.len() + SlashPermit::INIT_SPACE)?;
+    let dispute_rent =
+        chain.client.get_minimum_balance_for_rent_exemption(DisputeRecord::DISCRIMINATOR.len() + DisputeRecord::INIT_SPACE)?;
+
+    // New rent-exempt accounts stage 1 creates, worst case (a from-scratch
+    // run; a resumed run creates fewer): SwiftMarket marketplace + its bond
+    // vault (register_marketplace), seller B's stake + its stake vault
+    // (initialize_stake), three permits (SwiftMarket, seller B x CashDesk,
+    // seller B x PixelBazaar), two dispute records (the SwiftMarket
+    // dispute, the second CashDesk dispute), and two new token accounts
+    // (buyer_swiftmarket's, seller B's).
+    let new_accounts_rent = (marketplace_rent + token_account_rent)
+        + (stake_rent + token_account_rent)
+        + 3 * permit_rent
+        + 2 * dispute_rent
+        + 2 * token_account_rent;
+
+    // Five new signing wallets that pay fees of their own: governance,
+    // swiftmarket_authority, swiftmarket_authority_v2, buyer_swiftmarket,
+    // seller_b. swiftmarket_receipt_signer/arbiter and
+    // cashdesk_receipt_signer_v2 never sign a transaction, matching every
+    // other receipt-signer/arbiter role in this file.
+    let wallet_headroom = 5 * wallet_rent_floor;
+
+    // Transaction count, worst case: 1.1 (4) + 1.2 (1) + 1.3 (1) + 1.4 (1)
+    // + 1.5 (2) + 1.6 (1) + 1.7 (1) + 1.8 (1) + 1.9 (1) + 1.10 (2) + 1.11
+    // (6, including two revokes) = 21.
+    let transaction_count: u64 = 21;
+    let fee_estimate = transaction_count * SIGNATURE_FEE_HEADROOM;
+
+    let total = new_accounts_rent + wallet_headroom + fee_estimate;
+
+    println!("=== Stage 1 cost estimate (informational; not a gate) ===");
+    println!("  Up to {transaction_count} transactions, ~{fee_estimate} lamports fee headroom");
+    println!("  New rent-exempt accounts: ~{new_accounts_rent} lamports");
+    println!("  New wallet funding headroom: ~{wallet_headroom} lamports");
+    println!("  Estimated total: ~{total} lamports (~{:.6} SOL)", total as f64 / 1_000_000_000.0);
+    println!("  A resumed run that already completed part of stage 1 spends less than this.");
+    println!();
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn fund_wallets_stage1(
+    client: &RpcClient,
+    admin: &Keypair,
+    governance: &Keypair,
+    swiftmarket_authority: &Keypair,
+    swiftmarket_authority_v2: &Keypair,
+    buyer_swiftmarket: &Keypair,
+    seller_b: &Keypair,
+) -> Result<(), Box<dyn Error>> {
+    let wallet_rent_floor = client.get_minimum_balance_for_rent_exemption(0)?;
+    let token_account_rent = client.get_minimum_balance_for_rent_exemption(spl_token::state::Account::LEN)?;
+    let marketplace_rent = client.get_minimum_balance_for_rent_exemption(Marketplace::DISCRIMINATOR.len() + Marketplace::INIT_SPACE)?;
+    let stake_rent = client.get_minimum_balance_for_rent_exemption(SellerStake::DISCRIMINATOR.len() + SellerStake::INIT_SPACE)?;
+    let permit_rent = client.get_minimum_balance_for_rent_exemption(SlashPermit::DISCRIMINATOR.len() + SlashPermit::INIT_SPACE)?;
+    let dispute_rent = client.get_minimum_balance_for_rent_exemption(DisputeRecord::DISCRIMINATOR.len() + DisputeRecord::INIT_SPACE)?;
+
+    // governance: accept_config_authority, then propose_config_authority
+    // back to admin later in the same round trip. 2 transactions, no rent.
+    top_up_balance(client, admin, &governance.pubkey(), 2 * SIGNATURE_FEE_HEADROOM + wallet_rent_floor, "governance")?;
+
+    // swiftmarket_authority: register_marketplace (pays marketplace_rent +
+    // bond_vault's token_account_rent) + propose_marketplace_authority.
+    let swiftmarket_authority_funding = marketplace_rent + token_account_rent + 2 * SIGNATURE_FEE_HEADROOM + wallet_rent_floor;
+    top_up_balance(client, admin, &swiftmarket_authority.pubkey(), swiftmarket_authority_funding, "swiftmarket_authority")?;
+
+    // swiftmarket_authority_v2: accept_marketplace_authority only.
+    top_up_balance(client, admin, &swiftmarket_authority_v2.pubkey(), SIGNATURE_FEE_HEADROOM + wallet_rent_floor, "swiftmarket_authority_v2")?;
+
+    // buyer_swiftmarket: raise_dispute (pays dispute_rent).
+    let buyer_swiftmarket_funding = dispute_rent + SIGNATURE_FEE_HEADROOM + wallet_rent_floor;
+    top_up_balance(client, admin, &buyer_swiftmarket.pubkey(), buyer_swiftmarket_funding, "buyer_swiftmarket")?;
+
+    // seller_b: initialize_stake (pays stake_rent + vault's
+    // token_account_rent), add_stake, two grant_permit calls (each pays
+    // permit_rent), two revoke_permit calls. 6 transactions.
+    let seller_b_funding = stake_rent + token_account_rent + 2 * permit_rent + 6 * SIGNATURE_FEE_HEADROOM + wallet_rent_floor;
+    top_up_balance(client, admin, &seller_b.pubkey(), seller_b_funding, "seller_b")?;
+
+    println!();
+    Ok(())
+}
+
+fn run_stage_1(chain: &Chain, progress: &mut Value, roster: &StageRoster) -> Result<(), Box<dyn Error>> {
+    println!("=== Stage 1: immediate steps (1.1 - 1.11) ===");
+    print_stage1_cost_estimate(chain)?;
+
+    let dir = keypairs_dir();
+    let governance = load_or_create_keypair(&dir, "governance")?;
+    let swiftmarket_authority = load_or_create_keypair(&dir, "swiftmarket_authority")?;
+    let swiftmarket_authority_v2 = load_or_create_keypair(&dir, "swiftmarket_authority_v2")?;
+    let swiftmarket_receipt_signer = load_or_create_keypair(&dir, "swiftmarket_receipt_signer")?;
+    let swiftmarket_arbiter = load_or_create_keypair(&dir, "swiftmarket_arbiter")?;
+    let cashdesk_receipt_signer_v2 = load_or_create_keypair(&dir, "cashdesk_receipt_signer_v2")?;
+    let buyer_swiftmarket = load_or_create_keypair(&dir, "buyer_swiftmarket")?;
+    let seller_b = load_or_create_keypair(&dir, "seller_b")?;
+
+    fund_wallets_stage1(
+        chain.client,
+        roster.admin,
+        &governance,
+        &swiftmarket_authority,
+        &swiftmarket_authority_v2,
+        &buyer_swiftmarket,
+        &seller_b,
+    )?;
+
+    stage1_1_config_authority_roundtrip(chain, progress, roster.admin, &governance)?;
+    save_progress(progress)?;
+    println!();
+
+    let swiftmarket = stage1_2_register_swiftmarket(
+        chain,
+        &swiftmarket_authority,
+        swiftmarket_receipt_signer.pubkey(),
+        swiftmarket_arbiter.pubkey(),
+    )?;
+    println!();
+
+    stage1_3_update_pixelbazaar_bond(chain, roster)?;
+    println!();
+
+    stage1_4_rotate_cashdesk_receipt_signer(chain, roster, &cashdesk_receipt_signer_v2)?;
+    println!();
+
+    stage1_5_swiftmarket_authority_transfer(chain, swiftmarket, &swiftmarket_authority, &swiftmarket_authority_v2)?;
+    println!();
+
+    stage1_6_top_up_seller_free_collateral(chain, roster)?;
+    println!();
+
+    stage1_7_and_1_8_swiftmarket_permit(chain, roster, swiftmarket)?;
+    println!();
+
+    let buyer_swiftmarket_token_account =
+        load_or_find_or_create_token_account(chain.client, &dir, "buyer_swiftmarket", roster.admin, &chain.mint, &buyer_swiftmarket.pubkey())?;
+    top_up_token_balance(chain.client, roster.admin, &chain.mint, &buyer_swiftmarket_token_account, SWIFTMARKET_BUYER_TOKEN_FUNDING)?;
+    stage1_9_swiftmarket_dispute(
+        chain,
+        progress,
+        roster,
+        swiftmarket,
+        &buyer_swiftmarket,
+        buyer_swiftmarket_token_account,
+        &swiftmarket_receipt_signer,
+    )?;
+    save_progress(progress)?;
+    println!();
+
+    stage1_10_cashdesk_second_dispute(chain, progress, roster, roster.cashdesk_receipt_signer)?;
+    save_progress(progress)?;
+    println!();
+
+    stage1_11_seller_b(chain, progress, roster, &seller_b)?;
+    save_progress(progress)?;
+
+    println!();
+    println!("Stage 1: complete.");
+    Ok(())
+}
+
+/// Config.authority round-trips admin -> governance -> admin across four
+/// transactions, exercising propose_config_authority/accept_config_authority
+/// twice each. The start state and the fully-converged end state are BOTH
+/// `(authority = admin, pending_authority = default)` -- indistinguishable
+/// from Config's fields alone -- so `config_authority_roundtrip_done` in
+/// progress.json is what tells a fresh start apart from an already-finished
+/// one; every OTHER state along the way is unambiguous and drives the loop
+/// below directly from chain state, with `sent_any` distinguishing "just
+/// reached the converged state after sending a transaction this call" from
+/// "still at the start, having sent nothing yet."
+fn stage1_1_config_authority_roundtrip(chain: &Chain, progress: &mut Value, admin: &Keypair, governance: &Keypair) -> Result<(), Box<dyn Error>> {
+    println!("--- 1.1: propose_config_authority / accept_config_authority round trip (admin -> governance -> admin) ---");
+    println!("  Note: Config.authority currently confers no powers in this program (see docs/DESIGN-v2.md);");
+    println!("  this step proves the transfer mechanism works, not that the role does anything.");
+
+    if get_bool(progress, "config_authority_roundtrip_done") {
+        println!("  Already done in a previous run, skipping.");
+        return Ok(());
+    }
+
+    let mut sent_any = false;
+    for _ in 0..4 {
+        let state = read_config(chain.client, &chain.config)?;
+        if sent_any && state.authority == admin.pubkey() && state.pending_authority == Pubkey::default() {
+            break;
+        }
+        if state.authority == governance.pubkey() && state.pending_authority == admin.pubkey() {
+            let signature = send_accept_config_authority(chain, admin)?;
+            print_step("accept_config_authority(admin)", &signature);
+        } else if state.authority == governance.pubkey() && state.pending_authority == Pubkey::default() {
+            let signature = send_propose_config_authority(chain, governance, admin.pubkey())?;
+            print_step("propose_config_authority(governance -> admin)", &signature);
+        } else if state.authority == admin.pubkey() && state.pending_authority == governance.pubkey() {
+            let signature = send_accept_config_authority(chain, governance)?;
+            print_step("accept_config_authority(governance)", &signature);
+        } else {
+            // authority == admin, pending == default: only reachable here
+            // (before `sent_any`) as the genuine fresh start, since
+            // progress.json already confirmed the round trip never
+            // finished before this call.
+            let signature = send_propose_config_authority(chain, admin, governance.pubkey())?;
+            print_step("propose_config_authority(admin -> governance)", &signature);
+        }
+        sent_any = true;
+    }
+
+    let state = read_config(chain.client, &chain.config)?;
+    if state.authority != admin.pubkey() || state.pending_authority != Pubkey::default() {
+        return Err(format!(
+            "1.1 did not converge after 4 transactions: Config.authority={}, pending_authority={}",
+            state.authority, state.pending_authority
+        )
+        .into());
+    }
+    set_bool(progress, "config_authority_roundtrip_done", true);
+    println!("  1.1 complete: Config.authority is admin again, pending_authority is default.");
+    Ok(())
+}
+
+fn stage1_2_register_swiftmarket(
+    chain: &Chain,
+    swiftmarket_authority: &Keypair,
+    receipt_signer: Pubkey,
+    arbiter: Pubkey,
+) -> Result<Pubkey, Box<dyn Error>> {
+    println!(
+        "--- 1.2: register_marketplace(SwiftMarket, window = {} days, bond = {} bps) ---",
+        SWIFTMARKET_COMPLAINT_WINDOW_SECONDS / SECONDS_PER_DAY,
+        SWIFTMARKET_BOND_BPS
+    );
+    let swiftmarket = marketplace_pda(chain.program_id, SWIFTMARKET_ID);
+    if chain.client.get_account(&swiftmarket).is_ok() {
+        println!("  Already registered, skipping.");
+        return Ok(swiftmarket);
+    }
+    let (swiftmarket, signature) = send_register_marketplace(
+        chain,
+        swiftmarket_authority,
+        SWIFTMARKET_ID,
+        receipt_signer,
+        arbiter,
+        SWIFTMARKET_COMPLAINT_WINDOW_SECONDS,
+        SWIFTMARKET_BOND_BPS,
+    )?;
+    print_step("register_marketplace(SwiftMarket)", &signature);
+    println!("  Zero bond is legal on purpose (CLAUDE.md's deliberate-tradeoffs list); this is the");
+    println!("  first time devnet shows both ends of the legal bond range at once (CashDesk is 1,000 bps).");
+    Ok(swiftmarket)
+}
+
+fn stage1_3_update_pixelbazaar_bond(chain: &Chain, roster: &StageRoster) -> Result<(), Box<dyn Error>> {
+    println!("--- 1.3: update_marketplace(PixelBazaar, new_bond_bps = Some({PIXELBAZAAR_NEW_BOND_BPS})) ---");
+    let current = read_marketplace(chain.client, &roster.pixelbazaar)?;
+    if current.bond_bps == PIXELBAZAAR_NEW_BOND_BPS {
+        println!("  Already applied, skipping.");
+    } else {
+        let signature =
+            send_update_marketplace(chain, roster.pixelbazaar_authority, roster.pixelbazaar, None, None, None, Some(PIXELBAZAAR_NEW_BOND_BPS))?;
+        print_step("update_marketplace(PixelBazaar, new_bond_bps)", &signature);
+    }
+
+    // Prove a marketplace can change its terms without touching an
+    // already-granted permit: the original seller's PixelBazaar permit
+    // must still carry the rate it was granted under.
+    let permit = permit_pda(chain.program_id, roster.seller.pubkey(), roster.pixelbazaar);
+    let permit_state = read_permit(chain.client, &permit)?;
+    if permit_state.bond_bps != PIXELBAZAAR_BOND_BPS {
+        return Err(format!(
+            "expected the original seller's PixelBazaar permit to keep its frozen bond_bps {PIXELBAZAAR_BOND_BPS}, found {}",
+            permit_state.bond_bps
+        )
+        .into());
+    }
+    println!("  Confirmed: the existing PixelBazaar permit still carries bond_bps {PIXELBAZAAR_BOND_BPS}, frozen at grant.");
+    Ok(())
+}
+
+fn stage1_4_rotate_cashdesk_receipt_signer(chain: &Chain, roster: &StageRoster, new_signer: &Keypair) -> Result<(), Box<dyn Error>> {
+    println!("--- 1.4: update_marketplace(CashDesk, new_receipt_signer = Some(cashdesk_receipt_signer_v2)) ---");
+    let current = read_marketplace(chain.client, &roster.cashdesk)?;
+    if current.receipt_signer == new_signer.pubkey() {
+        println!("  Already rotated, skipping.");
+    } else {
+        let signature = send_update_marketplace(chain, roster.cashdesk_authority, roster.cashdesk, Some(new_signer.pubkey()), None, None, None)?;
+        print_step("update_marketplace(CashDesk, new_receipt_signer)", &signature);
+    }
+
+    let updated = read_marketplace(chain.client, &roster.cashdesk)?;
+    if updated.prev_receipt_signer != roster.cashdesk_receipt_signer.pubkey() {
+        return Err(format!(
+            "expected CashDesk's prev_receipt_signer to be the original signer {}, found {}",
+            roster.cashdesk_receipt_signer.pubkey(),
+            updated.prev_receipt_signer
+        )
+        .into());
+    }
+    if updated.signer_rotated_at == 0 {
+        return Err("expected CashDesk's signer_rotated_at to be non-zero after rotation".into());
+    }
+    println!("  Confirmed: prev_receipt_signer holds the original key, signer_rotated_at = {}.", updated.signer_rotated_at);
+    Ok(())
+}
+
+fn stage1_5_swiftmarket_authority_transfer(chain: &Chain, swiftmarket: Pubkey, authority: &Keypair, authority_v2: &Keypair) -> Result<(), Box<dyn Error>> {
+    println!("--- 1.5: propose_marketplace_authority / accept_marketplace_authority (SwiftMarket -> v2) ---");
+    let state = read_marketplace(chain.client, &swiftmarket)?;
+    if state.authority == authority_v2.pubkey() {
+        println!("  Already transferred, skipping.");
+        return Ok(());
+    }
+    if state.pending_authority != authority_v2.pubkey() {
+        let signature = send_propose_marketplace_authority(chain, authority, swiftmarket, authority_v2.pubkey())?;
+        print_step("propose_marketplace_authority(SwiftMarket -> v2)", &signature);
+    }
+    let signature = send_accept_marketplace_authority(chain, authority_v2, swiftmarket)?;
+    print_step("accept_marketplace_authority(SwiftMarket, v2)", &signature);
+    println!("  From here on, SwiftMarket's authority is v2 -- every later step needing it must use v2.");
+    Ok(())
+}
+
+fn stage1_6_top_up_seller_free_collateral(chain: &Chain, roster: &StageRoster) -> Result<(), Box<dyn Error>> {
+    println!("--- 1.6: add_stake (top up the original seller's free collateral for SwiftMarket) ---");
+    let stake_state = read_seller_stake(chain.client, &roster.stake)?;
+    let free = stake_state.staked.saturating_sub(stake_state.committed);
+    if free >= SELLER_FREE_COLLATERAL_TARGET {
+        println!("  Free collateral is already {} >= {}, skipping.", format_usdc(free), format_usdc(SELLER_FREE_COLLATERAL_TARGET));
+        return Ok(());
+    }
+    let shortfall = SELLER_FREE_COLLATERAL_TARGET - free;
+    top_up_token_balance(chain.client, roster.admin, &chain.mint, &roster.seller_token_account, shortfall)?;
+    let instruction = Instruction::new_with_bytes(
+        chain.program_id,
+        &truststake::instruction::AddStake { amount: shortfall }.data(),
+        truststake::accounts::AddStakeAccountConstraints {
+            seller: roster.seller.pubkey(),
+            stake: roster.stake,
+            stake_vault: stake_vault_pda(chain.program_id, roster.seller.pubkey()),
+            mint: chain.mint,
+            seller_token_account: roster.seller_token_account,
+            token_program: spl_token::ID,
+            event_authority: chain.event_authority,
+            program: chain.program_id,
+        }
+        .to_account_metas(None),
+    );
+    let signature = send(chain.client, &[instruction], &roster.seller.pubkey(), &[roster.seller])?;
+    print_step(&format!("add_stake({}) -- topping up free collateral for SwiftMarket", format_usdc(shortfall)), &signature);
+    Ok(())
+}
+
+fn stage1_7_and_1_8_swiftmarket_permit(chain: &Chain, roster: &StageRoster, swiftmarket: Pubkey) -> Result<(), Box<dyn Error>> {
+    println!("--- 1.7: grant_permit(SwiftMarket, {}) ---", format_usdc(SWIFTMARKET_GRANT));
+    let permit = permit_pda(chain.program_id, roster.seller.pubkey(), swiftmarket);
+    let granted_at_before = if let Some(existing) = try_read_permit(chain.client, &permit) {
+        println!("  Already granted, skipping.");
+        existing.granted_at
+    } else {
+        let signature = send_grant_permit(chain, roster.seller, roster.stake, swiftmarket, SWIFTMARKET_GRANT)?;
+        print_step(&format!("grant_permit(SwiftMarket, {})", format_usdc(SWIFTMARKET_GRANT)), &signature);
+        read_permit(chain.client, &permit)?.granted_at
+    };
+
+    println!("--- 1.8: increase_permit(SwiftMarket, +{}) ---", format_usdc(SWIFTMARKET_INCREASE));
+    let current = read_permit(chain.client, &permit)?;
+    if current.max_slashable < SWIFTMARKET_PERMIT_TOTAL {
+        let delta = SWIFTMARKET_PERMIT_TOTAL - current.max_slashable;
+        let signature = send_increase_permit(chain, roster.seller, roster.stake, swiftmarket, delta)?;
+        print_step(&format!("increase_permit(SwiftMarket, +{})", format_usdc(delta)), &signature);
+    } else {
+        println!("  Already increased, skipping.");
+    }
+
+    let final_state = read_permit(chain.client, &permit)?;
+    if final_state.max_slashable != SWIFTMARKET_PERMIT_TOTAL {
+        return Err(format!(
+            "expected SwiftMarket permit max_slashable {}, found {}",
+            format_usdc(SWIFTMARKET_PERMIT_TOTAL),
+            format_usdc(final_state.max_slashable)
+        )
+        .into());
+    }
+    if final_state.granted_at != granted_at_before {
+        return Err(format!("expected granted_at to stay {granted_at_before} across increase_permit, found {}", final_state.granted_at).into());
+    }
+    println!(
+        "  Confirmed: max_slashable = {}, granted_at unchanged at {} -- increase_permit modifies the era, it does not start a new one.",
+        format_usdc(final_state.max_slashable),
+        final_state.granted_at
+    );
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn stage1_9_swiftmarket_dispute(
+    chain: &Chain,
+    progress: &mut Value,
+    roster: &StageRoster,
+    swiftmarket: Pubkey,
+    buyer_swiftmarket: &Keypair,
+    buyer_swiftmarket_token_account: Pubkey,
+    receipt_signer: &Keypair,
+) -> Result<(), Box<dyn Error>> {
+    println!(
+        "--- 1.9: raise_dispute(SwiftMarket, claim = {}) -- deliberately left unresolved ---",
+        format_usdc(SWIFTMARKET_CLAIM)
+    );
+    if let Some(order_id) = get_bytes32(progress, "swiftmarket_dispute_order_id") {
+        let dispute = dispute_pda(chain.program_id, swiftmarket, roster.seller.pubkey(), order_id);
+        if chain.client.get_account(&dispute).is_ok() {
+            println!("  Already raised (order_id recorded in progress.json), skipping.");
+            return Ok(());
+        }
+    }
+
+    let order_id = Keypair::new().pubkey().to_bytes();
+    let issued_at = now_unix();
+    let receipt = OrderReceipt {
+        domain: RECEIPT_DOMAIN,
+        program_id: chain.program_id,
+        chain_id: DEVNET_CHAIN_ID,
+        marketplace_id: SWIFTMARKET_ID,
+        seller: roster.seller.pubkey(),
+        buyer: buyer_swiftmarket.pubkey(),
+        order_id,
+        amount: SWIFTMARKET_ORDER_AMOUNT,
+        issued_at,
+        expires_at: issued_at + 7 * SECONDS_PER_DAY,
+    };
+    let message = receipt.message();
+    let signature_bytes: [u8; 64] = receipt_signer.sign_message(&message).into();
+    let verify_instruction = new_ed25519_instruction_with_signature(&message, &signature_bytes, &receipt_signer.pubkey().to_bytes());
+
+    let permit = permit_pda(chain.program_id, roster.seller.pubkey(), swiftmarket);
+    let dispute = dispute_pda(chain.program_id, swiftmarket, roster.seller.pubkey(), order_id);
+    let bond_vault = bond_vault_pda(chain.program_id, swiftmarket);
+    let raise_instruction = Instruction::new_with_bytes(
+        chain.program_id,
+        &truststake::instruction::RaiseDispute { order_id, claim: SWIFTMARKET_CLAIM }.data(),
+        truststake::accounts::RaiseDisputeAccountConstraints {
+            buyer: buyer_swiftmarket.pubkey(),
+            config: chain.config,
+            marketplace: swiftmarket,
+            stake: roster.stake,
+            permit,
+            dispute,
+            bond_vault,
+            mint: chain.mint,
+            buyer_token_account: buyer_swiftmarket_token_account,
+            instructions_sysvar: solana_instructions_sysvar::ID,
+            token_program: spl_token::ID,
+            system_program: anchor_lang::system_program::ID,
+            event_authority: chain.event_authority,
+            program: chain.program_id,
+        }
+        .to_account_metas(None),
+    );
+    let signature = send(chain.client, &[verify_instruction, raise_instruction], &buyer_swiftmarket.pubkey(), &[buyer_swiftmarket])?;
+    print_step("[Ed25519 verify, raise_dispute] (SwiftMarket)", &signature);
+    set_bytes32(progress, "swiftmarket_dispute_order_id", order_id);
+    println!("  This dispute is stage 4's expire_dispute target (30 days from its creation).");
+    Ok(())
+}
+
+/// Raises AND resolves(upheld = false) CashDesk's second dispute, signed by
+/// the ORIGINAL cashdesk_receipt_signer (not v2) and backdated to before
+/// 1.4's rotation, so it exercises raise_dispute's `signed_by_previous`
+/// branch: an honest key rotation must not void an outstanding receipt.
+fn stage1_10_cashdesk_second_dispute(
+    chain: &Chain,
+    progress: &mut Value,
+    roster: &StageRoster,
+    original_receipt_signer: &Keypair,
+) -> Result<(), Box<dyn Error>> {
+    println!("--- 1.10: raise_dispute + resolve_dispute(upheld = false) on CashDesk (second dispute) ---");
+
+    let order_id = if let Some(existing) = get_bytes32(progress, "cashdesk_second_dispute_order_id") {
+        existing
+    } else {
+        let marketplace_state = read_marketplace(chain.client, &roster.cashdesk)?;
+        if marketplace_state.signer_rotated_at == 0 {
+            return Err("1.10 requires CashDesk's receipt signer to have already been rotated (1.4 must run first)".into());
+        }
+        let order_id = Keypair::new().pubkey().to_bytes();
+        let issued_at = marketplace_state.signer_rotated_at - BACKDATE_BEFORE_ROTATION_SECONDS;
+        let receipt = OrderReceipt {
+            domain: RECEIPT_DOMAIN,
+            program_id: chain.program_id,
+            chain_id: DEVNET_CHAIN_ID,
+            marketplace_id: roster.cashdesk_id,
+            seller: roster.seller.pubkey(),
+            buyer: roster.buyer.pubkey(),
+            order_id,
+            amount: CASHDESK_SECOND_ORDER_AMOUNT,
+            issued_at,
+            expires_at: issued_at + 7 * SECONDS_PER_DAY,
+        };
+        let message = receipt.message();
+        let signature_bytes: [u8; 64] = original_receipt_signer.sign_message(&message).into();
+        let verify_instruction =
+            new_ed25519_instruction_with_signature(&message, &signature_bytes, &original_receipt_signer.pubkey().to_bytes());
+
+        let permit = permit_pda(chain.program_id, roster.seller.pubkey(), roster.cashdesk);
+        let dispute = dispute_pda(chain.program_id, roster.cashdesk, roster.seller.pubkey(), order_id);
+        let bond_vault = bond_vault_pda(chain.program_id, roster.cashdesk);
+        let raise_instruction = Instruction::new_with_bytes(
+            chain.program_id,
+            &truststake::instruction::RaiseDispute { order_id, claim: CASHDESK_SECOND_CLAIM }.data(),
+            truststake::accounts::RaiseDisputeAccountConstraints {
+                buyer: roster.buyer.pubkey(),
+                config: chain.config,
+                marketplace: roster.cashdesk,
+                stake: roster.stake,
+                permit,
+                dispute,
+                bond_vault,
+                mint: chain.mint,
+                buyer_token_account: roster.buyer_token_account,
+                instructions_sysvar: solana_instructions_sysvar::ID,
+                token_program: spl_token::ID,
+                system_program: anchor_lang::system_program::ID,
+                event_authority: chain.event_authority,
+                program: chain.program_id,
+            }
+            .to_account_metas(None),
+        );
+        let signature = send(chain.client, &[verify_instruction, raise_instruction], &roster.buyer.pubkey(), &[roster.buyer])?;
+        print_step("[Ed25519 verify, raise_dispute] (CashDesk, second dispute, signed pre-rotation)", &signature);
+        println!(
+            "  receipt.issued_at ({issued_at}) < CashDesk.signer_rotated_at ({}), signed by the pre-rotation key.",
+            marketplace_state.signer_rotated_at
+        );
+        set_bytes32(progress, "cashdesk_second_dispute_order_id", order_id);
+        order_id
+    };
+
+    let dispute = dispute_pda(chain.program_id, roster.cashdesk, roster.seller.pubkey(), order_id);
+    let dispute_state = read_dispute(chain.client, &dispute)?;
+    if dispute_state.status != DisputeStatus::Open as u8 {
+        println!("  Already resolved, skipping.");
+        return Ok(());
+    }
+
+    let stake_before = read_seller_stake(chain.client, &roster.stake)?;
+    let permit = permit_pda(chain.program_id, roster.seller.pubkey(), roster.cashdesk);
+    let bond_vault = bond_vault_pda(chain.program_id, roster.cashdesk);
+    let resolve_instruction = Instruction::new_with_bytes(
+        chain.program_id,
+        &truststake::instruction::ResolveDispute { upheld: false }.data(),
+        truststake::accounts::ResolveDisputeAccountConstraints {
+            arbiter: roster.cashdesk_arbiter.pubkey(),
+            marketplace: roster.cashdesk,
+            dispute,
+            permit,
+            stake: roster.stake,
+            stake_vault: stake_vault_pda(chain.program_id, roster.seller.pubkey()),
+            bond_vault,
+            mint: chain.mint,
+            buyer_token_account: roster.buyer_token_account,
+            token_program: spl_token::ID,
+            event_authority: chain.event_authority,
+            program: chain.program_id,
+        }
+        .to_account_metas(None),
+    );
+    let signature = send(chain.client, &[resolve_instruction], &roster.admin.pubkey(), &[roster.admin, roster.cashdesk_arbiter])?;
+    print_step("resolve_dispute(upheld = false) (CashDesk, second dispute)", &signature);
+
+    let stake_after = read_seller_stake(chain.client, &roster.stake)?;
+    let bond = dispute_state.bond;
+    if stake_after.staked != stake_before.staked + bond {
+        return Err(format!(
+            "expected stake.staked to rise by exactly the bond {} ({} -> {}), found {}",
+            format_usdc(bond),
+            format_usdc(stake_before.staked),
+            format_usdc(stake_before.staked + bond),
+            format_usdc(stake_after.staked)
+        )
+        .into());
+    }
+    println!(
+        "  Confirmed: rejection moved the bond ({}) into the seller's vault; staked {} -> {}.",
+        format_usdc(bond),
+        format_usdc(stake_before.staked),
+        format_usdc(stake_after.staked)
+    );
+    println!("  This dispute is stage 4's close_dispute target.");
+    Ok(())
+}
+
+fn stage1_11_seller_b(chain: &Chain, progress: &mut Value, roster: &StageRoster, seller_b: &Keypair) -> Result<(), Box<dyn Error>> {
+    println!("--- 1.11: a second seller (seller_b) stakes, grants two permits, revokes both ---");
+    let stake = stake_pda(chain.program_id, seller_b.pubkey());
+    let stake_vault = stake_vault_pda(chain.program_id, seller_b.pubkey());
+
+    if chain.client.get_account(&stake).is_err() {
+        let instruction = Instruction::new_with_bytes(
+            chain.program_id,
+            &truststake::instruction::InitializeStake {}.data(),
+            truststake::accounts::InitializeStakeAccountConstraints {
+                seller: seller_b.pubkey(),
+                config: chain.config,
+                mint: chain.mint,
+                stake,
+                stake_vault,
+                token_program: spl_token::ID,
+                system_program: anchor_lang::system_program::ID,
+                event_authority: chain.event_authority,
+                program: chain.program_id,
+            }
+            .to_account_metas(None),
+        );
+        let signature = send(chain.client, &[instruction], &seller_b.pubkey(), &[seller_b])?;
+        print_step("initialize_stake(seller_b)", &signature);
+    } else {
+        println!("  initialize_stake(seller_b): already done, skipping.");
+    }
+
+    let seller_b_token_account =
+        load_or_find_or_create_token_account(chain.client, &keypairs_dir(), "seller_b", roster.admin, &chain.mint, &seller_b.pubkey())?;
+    let current_staked = read_seller_stake(chain.client, &stake)?.staked;
+    if current_staked < SELLER_B_STAKE {
+        let shortfall = SELLER_B_STAKE - current_staked;
+        top_up_token_balance(chain.client, roster.admin, &chain.mint, &seller_b_token_account, shortfall)?;
+        let instruction = Instruction::new_with_bytes(
+            chain.program_id,
+            &truststake::instruction::AddStake { amount: shortfall }.data(),
+            truststake::accounts::AddStakeAccountConstraints {
+                seller: seller_b.pubkey(),
+                stake,
+                stake_vault,
+                mint: chain.mint,
+                seller_token_account: seller_b_token_account,
+                token_program: spl_token::ID,
+                event_authority: chain.event_authority,
+                program: chain.program_id,
+            }
+            .to_account_metas(None),
+        );
+        let signature = send(chain.client, &[instruction], &seller_b.pubkey(), &[seller_b])?;
+        print_step(&format!("add_stake(seller_b, {})", format_usdc(shortfall)), &signature);
+    } else {
+        println!("  add_stake(seller_b): already staked {} >= {}, skipping.", format_usdc(current_staked), format_usdc(SELLER_B_STAKE));
+    }
+
+    ensure_permit(chain, seller_b, stake, roster.cashdesk, SELLER_B_CASHDESK_PERMIT, "seller_b x CashDesk")?;
+    ensure_permit(chain, seller_b, stake, roster.pixelbazaar, SELLER_B_PIXELBAZAAR_PERMIT, "seller_b x PixelBazaar")?;
+
+    let cashdesk_revoked_at = ensure_revoked(chain, progress, "seller_b_cashdesk_revoked_at", seller_b, roster.cashdesk, "seller_b x CashDesk")?;
+    let pixelbazaar_revoked_at =
+        ensure_revoked(chain, progress, "seller_b_pixelbazaar_revoked_at", seller_b, roster.pixelbazaar, "seller_b x PixelBazaar")?;
+
+    println!("  seller_b's CashDesk permit revoked at {cashdesk_revoked_at} (stage 3's release_permit target, 2-day window);");
+    println!("  seller_b's PixelBazaar permit revoked at {pixelbazaar_revoked_at} (stage 2's release_permit_early target).");
+    println!("  Using a second seller keeps the original seller's richer state (two permits, one slashed) intact,");
+    println!("  since both release paths CLOSE the permit account.");
+    Ok(())
+}
+
+fn ensure_revoked(
+    chain: &Chain,
+    progress: &mut Value,
+    progress_key: &str,
+    seller: &Keypair,
+    marketplace: Pubkey,
+    name: &str,
+) -> Result<i64, Box<dyn Error>> {
+    if let Some(revoked_at) = get_i64(progress, progress_key) {
+        return Ok(revoked_at);
+    }
+    let permit = permit_pda(chain.program_id, seller.pubkey(), marketplace);
+    let state = read_permit(chain.client, &permit)?;
+    let revoked_at = if state.revoked_at != i64::MAX {
+        state.revoked_at
+    } else {
+        let signature = send_revoke_permit(chain, seller, marketplace)?;
+        print_step(&format!("revoke_permit({name})"), &signature);
+        read_permit(chain.client, &permit)?.revoked_at
+    };
+    set_i64(progress, progress_key, revoked_at);
+    Ok(revoked_at)
+}
+
+// ==================== Stage 2 ====================
+
+fn run_stage_2(chain: &Chain, progress: &Value, roster: &StageRoster) -> Result<(), Box<dyn Error>> {
+    println!("=== Stage 2: release_permit_early on seller B's PixelBazaar permit ===");
+    let seller_b = load_or_create_keypair(&keypairs_dir(), "seller_b")?;
+    let permit = permit_pda(chain.program_id, seller_b.pubkey(), roster.pixelbazaar);
+
+    if chain.client.get_account(&permit).is_err() {
+        println!("  Already released, skipping.");
+        return Ok(());
+    }
+
+    let Some(revoked_at) = get_i64(progress, "seller_b_pixelbazaar_revoked_at") else {
+        println!("  Not yet reachable: stage 1.11 has not recorded seller_b's PixelBazaar revocation yet. Run stage 1 first.");
+        return Ok(());
+    };
+    let due_at = revoked_at + CLOCK_SKEW_TOLERANCE_SECONDS;
+    let now = now_unix();
+    println!("  Required: now >= revoked_at ({revoked_at}) + CLOCK_SKEW_TOLERANCE_SECONDS ({CLOCK_SKEW_TOLERANCE_SECONDS}) = {due_at}. Actual now: {now}.");
+    if now < due_at {
+        println!("  Not yet due ({} seconds remaining).", due_at - now);
+        return Ok(());
+    }
+
+    let stake = stake_pda(chain.program_id, seller_b.pubkey());
+    let stake_before = read_seller_stake(chain.client, &stake)?;
+    let permit_state = read_permit(chain.client, &permit)?;
+    let remaining_allowance = permit_state.max_slashable - permit_state.slashed;
+
+    // Requires BOTH seller_b and PixelBazaar's current authority to sign;
+    // the script holds both.
+    let signature = send_release_permit_early(chain, &seller_b, roster.pixelbazaar_authority, roster.pixelbazaar)?;
+    print_step("release_permit_early(seller_b, PixelBazaar)", &signature);
+
+    let stake_after = read_seller_stake(chain.client, &stake)?;
+    if stake_before.committed - stake_after.committed != remaining_allowance {
+        return Err(format!(
+            "expected seller_b's committed to drop by exactly the remaining allowance {}, dropped by {} instead",
+            format_usdc(remaining_allowance),
+            format_usdc(stake_before.committed - stake_after.committed)
+        )
+        .into());
+    }
+    if chain.client.get_account(&permit).is_ok() {
+        return Err("expected the permit account to no longer exist after release_permit_early".into());
+    }
+    println!("  Confirmed: committed dropped by {}, permit account is gone.", format_usdc(remaining_allowance));
+    Ok(())
+}
+
+// ==================== Stage 3 ====================
+
+fn run_stage_3(chain: &Chain, progress: &Value, roster: &StageRoster) -> Result<(), Box<dyn Error>> {
+    println!("=== Stage 3: release_permit on seller B's CashDesk permit ===");
+    let seller_b = load_or_create_keypair(&keypairs_dir(), "seller_b")?;
+    let permit = permit_pda(chain.program_id, seller_b.pubkey(), roster.cashdesk);
+
+    if chain.client.get_account(&permit).is_err() {
+        println!("  Already released, skipping.");
+        return Ok(());
+    }
+
+    let Some(revoked_at) = get_i64(progress, "seller_b_cashdesk_revoked_at") else {
+        println!("  Not yet reachable: stage 1.11 has not recorded seller_b's CashDesk revocation yet. Run stage 1 first.");
+        return Ok(());
+    };
+    let permit_state = read_permit(chain.client, &permit)?;
+    let due_at = revoked_at + permit_state.complaint_window.max(CLOCK_SKEW_TOLERANCE_SECONDS);
+    let now = now_unix();
+    println!(
+        "  Required: now >= revoked_at ({revoked_at}) + max(complaint_window {}, clock-skew tolerance {CLOCK_SKEW_TOLERANCE_SECONDS}) = {due_at}. Actual now: {now}.",
+        permit_state.complaint_window
+    );
+    if now < due_at {
+        println!("  Not yet due ({} seconds remaining).", due_at - now);
+        return Ok(());
+    }
+
+    let remaining_allowance = permit_state.max_slashable - permit_state.slashed;
+    let stake = stake_pda(chain.program_id, seller_b.pubkey());
+    let stake_before = read_seller_stake(chain.client, &stake)?;
+    let rent_before = chain.client.get_balance(&seller_b.pubkey())?;
+
+    // Permissionless: called by admin, to demonstrate onchain that a third
+    // party can free a seller's collateral.
+    let signature = send_release_permit(chain, roster.admin, seller_b.pubkey(), roster.cashdesk)?;
+    print_step("release_permit(admin calls it for seller_b, CashDesk)", &signature);
+
+    let stake_after = read_seller_stake(chain.client, &stake)?;
+    if stake_before.committed - stake_after.committed != remaining_allowance {
+        return Err(format!(
+            "expected seller_b's committed to drop by exactly the remaining allowance {}, dropped by {} instead",
+            format_usdc(remaining_allowance),
+            format_usdc(stake_before.committed - stake_after.committed)
+        )
+        .into());
+    }
+    if chain.client.get_account(&permit).is_ok() {
+        return Err("expected the permit account to no longer exist after release_permit".into());
+    }
+    let rent_after = chain.client.get_balance(&seller_b.pubkey())?;
+    if rent_after <= rent_before {
+        return Err(format!("expected seller_b's balance to rise from the refunded rent ({rent_before} -> {rent_after})").into());
+    }
+    println!(
+        "  Confirmed: committed dropped by {}, permit account is gone, rent went to seller_b ({rent_before} -> {rent_after} lamports).",
+        format_usdc(remaining_allowance)
+    );
+    Ok(())
+}
+
+// ==================== Stage 4 ====================
+
+fn run_stage_4(chain: &Chain, progress: &Value, roster: &StageRoster) -> Result<(), Box<dyn Error>> {
+    println!("=== Stage 4: expire_dispute (SwiftMarket) and close_dispute (CashDesk x2) ===");
+    let dir = keypairs_dir();
+    let stranger = load_or_create_keypair(&dir, "stranger")?;
+    let stranger_target = 3 * SIGNATURE_FEE_HEADROOM + chain.client.get_minimum_balance_for_rent_exemption(0)?;
+    top_up_balance(chain.client, roster.admin, &stranger.pubkey(), stranger_target, "stranger")?;
+
+    stage4_1_expire_swiftmarket_dispute(chain, progress, roster, &stranger)?;
+    println!();
+    stage4_2_close_cashdesk_disputes(chain, progress, roster, &stranger)?;
+    Ok(())
+}
+
+/// Permissionless, called by `stranger` (neither the buyer nor the
+/// marketplace) to show onchain that a stranger can break the deadlock.
+fn stage4_1_expire_swiftmarket_dispute(chain: &Chain, progress: &Value, roster: &StageRoster, stranger: &Keypair) -> Result<(), Box<dyn Error>> {
+    println!("--- 4.1: expire_dispute (SwiftMarket dispute from 1.9) ---");
+    let Some(order_id) = get_bytes32(progress, "swiftmarket_dispute_order_id") else {
+        println!("  Not yet reachable: stage 1.9 has not raised the SwiftMarket dispute yet. Run stage 1 first.");
+        return Ok(());
+    };
+    let swiftmarket = marketplace_pda(chain.program_id, SWIFTMARKET_ID);
+    let dispute = dispute_pda(chain.program_id, swiftmarket, roster.seller.pubkey(), order_id);
+    let dispute_state = read_dispute(chain.client, &dispute)?;
+    if dispute_state.status != DisputeStatus::Open as u8 {
+        println!("  Already expired, skipping.");
+        return Ok(());
+    }
+
+    let now = now_unix();
+    println!("  Required: now >= expires_at ({}). Actual now: {now}.", dispute_state.expires_at);
+    if now < dispute_state.expires_at {
+        println!("  Not yet due ({} seconds remaining).", dispute_state.expires_at - now);
+        return Ok(());
+    }
+
+    let permit = permit_pda(chain.program_id, roster.seller.pubkey(), swiftmarket);
+    let marketplace_before = read_marketplace(chain.client, &swiftmarket)?;
+    let permit_before = read_permit(chain.client, &permit)?;
+
+    let buyer_swiftmarket_token_account =
+        load_or_find_or_create_token_account(chain.client, &keypairs_dir(), "buyer_swiftmarket", roster.admin, &chain.mint, &dispute_state.buyer)?;
+    let signature = send_expire_dispute(chain, stranger, swiftmarket, dispute, permit, buyer_swiftmarket_token_account)?;
+    print_step("expire_dispute(stranger calls it, SwiftMarket)", &signature);
+
+    let dispute_after = read_dispute(chain.client, &dispute)?;
+    let marketplace_after = read_marketplace(chain.client, &swiftmarket)?;
+    let permit_after = read_permit(chain.client, &permit)?;
+    if dispute_after.status != DisputeStatus::Abandoned as u8 {
+        return Err("expected dispute status to be Abandoned after expire_dispute".into());
+    }
+    if marketplace_after.disputes_abandoned != marketplace_before.disputes_abandoned + 1 {
+        return Err("expected SwiftMarket's disputes_abandoned to rise by 1".into());
+    }
+    if permit_after.open_disputes != permit_before.open_disputes - 1 {
+        return Err("expected the SwiftMarket permit's open_disputes to fall by 1".into());
+    }
+    if permit_after.open_disputes != 0 {
+        return Err(format!("expected the SwiftMarket permit's open_disputes to fall to zero, found {}", permit_after.open_disputes).into());
+    }
+    println!(
+        "  Confirmed: status = Abandoned, disputes_abandoned {} -> {}, open_disputes {} -> {}.",
+        marketplace_before.disputes_abandoned, marketplace_after.disputes_abandoned, permit_before.open_disputes, permit_after.open_disputes
+    );
+    Ok(())
+}
+
+fn stage4_2_close_cashdesk_disputes(chain: &Chain, progress: &Value, roster: &StageRoster, stranger: &Keypair) -> Result<(), Box<dyn Error>> {
+    println!("--- 4.2: close_dispute (CashDesk: the rejected second dispute, and the original upheld one) ---");
+
+    if let Some(order_id) = get_bytes32(progress, "cashdesk_second_dispute_order_id") {
+        let dispute = dispute_pda(chain.program_id, roster.cashdesk, roster.seller.pubkey(), order_id);
+        try_close_dispute(chain, stranger, dispute, "CashDesk second dispute (1.10, rejected)")?;
+    } else {
+        println!("  CashDesk second dispute: not yet reachable, stage 1.10 has not run yet.");
+    }
+
+    match find_dispute_by_marketplace_seller_status(chain, roster.cashdesk, roster.seller.pubkey(), DisputeStatus::Upheld)? {
+        Some((dispute, _)) => {
+            try_close_dispute(chain, stranger, dispute, "CashDesk original dispute (2026-08-24 run, upheld)")?;
+        }
+        None => println!(
+            "  CashDesk original dispute: no Upheld DisputeRecord found for this seller on CashDesk \
+             (unexpected; the original walk's Step 7 should have created one)."
+        ),
+    }
+    Ok(())
+}
+
+fn try_close_dispute(chain: &Chain, stranger: &Keypair, dispute: Pubkey, label: &str) -> Result<(), Box<dyn Error>> {
+    let Some(dispute_state) = try_read_dispute(chain.client, &dispute) else {
+        println!("  {label}: already closed, skipping.");
+        return Ok(());
+    };
+    if dispute_state.status == DisputeStatus::Open as u8 {
+        println!("  {label}: still open, cannot close yet.");
+        return Ok(());
+    }
+
+    let now = now_unix();
+    println!("  {label}: required now >= closable_after ({}). Actual now: {now}.", dispute_state.closable_after);
+    if now < dispute_state.closable_after {
+        println!("  {label}: not yet due ({} seconds remaining).", dispute_state.closable_after - now);
+        return Ok(());
+    }
+
+    let rent_before = chain.client.get_balance(&dispute_state.buyer)?;
+    // Permissionless: called by a stranger.
+    let signature = send_close_dispute(chain, stranger, dispute_state.buyer, dispute)?;
+    print_step(&format!("close_dispute({label})"), &signature);
+
+    if chain.client.get_account(&dispute).is_ok() {
+        return Err(format!("expected {label}'s dispute record to no longer exist after close_dispute").into());
+    }
+    let rent_after = chain.client.get_balance(&dispute_state.buyer)?;
+    if rent_after <= rent_before {
+        return Err(format!("expected {label}'s buyer balance to rise from the refunded rent ({rent_before} -> {rent_after})").into());
+    }
+    println!("  {label}: confirmed closed, rent refunded to buyer ({rent_before} -> {rent_after} lamports).");
+    Ok(())
 }

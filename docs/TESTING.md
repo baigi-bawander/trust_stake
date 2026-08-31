@@ -482,6 +482,54 @@ script. Both are exercised in `tests/test_phase2.rs` instead.
 
 ---
 
+## What the four-stage run proves (the remaining 11 handlers)
+
+`examples/devnet_demo.rs` was extended to reach every handler Step 7 above does not, across four
+wall-clock-gated stages -- see that file's own module doc comment for the full design and
+CLAUDE.md's "Real devnet demo" bullet for how the staging and resumability work.
+`tests/test_devnet_demo_parity.rs` proves this entire sequence, both directions of every
+boundary, against LiteSVM first; this table is the record of the real devnet run, filled in as
+each stage is actually executed. **Do not invent a signature here** -- add a row only after
+running that stage for real and confirming it with `solana confirm -v <signature>`.
+
+### Stage 1 (immediate)
+
+| Step | Handler(s) | Signature | Explorer |
+| --- | --- | --- | --- |
+| 1.1 | `propose_config_authority` ×2, `accept_config_authority` ×2 | _pending_ | |
+| 1.2 | `register_marketplace` (SwiftMarket) | _pending_ | |
+| 1.3 | `update_marketplace` (PixelBazaar bond) | _pending_ | |
+| 1.4 | `update_marketplace` (CashDesk receipt signer) | _pending_ | |
+| 1.5 | `propose_marketplace_authority`, `accept_marketplace_authority` | _pending_ | |
+| 1.6 | `add_stake` (top-up) | _pending_ | |
+| 1.7 | `grant_permit` (SwiftMarket) | _pending_ | |
+| 1.8 | `increase_permit` (SwiftMarket) | _pending_ | |
+| 1.9 | `raise_dispute` (SwiftMarket, left open) | _pending_ | |
+| 1.10 | `raise_dispute` + `resolve_dispute(upheld = false)` (CashDesk, second) | _pending_ | |
+| 1.11 | `initialize_stake`, `add_stake`, `grant_permit` ×2, `revoke_permit` ×2 (seller B) | _pending_ | |
+
+### Stage 2 (due 1 hour after 1.11's revocation)
+
+| Step | Handler(s) | Signature | Explorer |
+| --- | --- | --- | --- |
+| 2.1 | `release_permit_early` (seller B × PixelBazaar) | _pending_ | |
+
+### Stage 3 (due 2 days after 1.11's revocation)
+
+| Step | Handler(s) | Signature | Explorer |
+| --- | --- | --- | --- |
+| 3.1 | `release_permit` (seller B × CashDesk) | _pending_ | |
+
+### Stage 4 (due 30 days after stage 1)
+
+| Step | Handler(s) | Signature | Explorer |
+| --- | --- | --- | --- |
+| 4.1 | `expire_dispute` (SwiftMarket dispute from 1.9) | _pending_ | |
+| 4.2 | `close_dispute` (CashDesk second dispute from 1.10) | _pending_ | |
+| 4.2 | `close_dispute` (original CashDesk dispute from the Step 7 run above) | _pending_ | |
+
+---
+
 ## Regression coverage against the audit
 
 Every critical and high finding from [AUDIT-v2-FINDINGS.md](AUDIT-v2-FINDINGS.md) needs a
