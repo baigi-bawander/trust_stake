@@ -35,7 +35,12 @@ pub struct DisputeRecord {
     pub created_at: i64,
     /// `created_at + DISPUTE_EXPIRY` (30 days, protocol constant).
     pub expires_at: i64,
-    /// `receipt.issued_at + permit.complaint_window`.
+    /// `receipt.issued_at + max(permit.complaint_window,
+    /// MAX_COMPLAINT_WINDOW_SECONDS)`, not the live permit's own window
+    /// alone: a permit PDA carries no nonce, so a grandfathered
+    /// marketplace's wider window must not let a re-grant at the same
+    /// address outlive the record that blocks its own receipts from being
+    /// replayed (`raise_dispute`'s handler doc comment; docs/DESIGN-v2.md).
     pub closable_after: i64,
     /// One of [`DisputeStatus`], as `DisputeStatus::Open as u8`.
     pub status: u8,

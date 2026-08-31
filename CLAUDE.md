@@ -10,7 +10,7 @@ Staked reputation for peer-to-peer marketplaces on Solana. Full pitch, architect
   place to v2 on 2026-08-24 (data length 649,264 bytes, deployed in slot 487349484). v1 no
   longer exists at this address; v1's own transaction history stays valid on Solana Explorer
   regardless, since upgrading a program does not change chain history.
-- **Tests:** `main` has 147 tests passing (`cargo test` from `programs/truststake/`, LiteSVM),
+- **Tests:** `main` has 151 tests passing (`cargo test` from `programs/truststake/`, LiteSVM),
   plus a real devnet run with every signature recorded in
   [docs/TESTING.md](docs/TESTING.md).
 - **Repo:** `https://github.com/baigi-bawander/trust_stake`
@@ -47,11 +47,11 @@ a production migration.
 OpenSSL build fails on a clock-skew check. LiteSVM loads the pre-built
 `target/deploy/truststake.so` rather than the native test binary, so any handler change needs
 `anchor build` before the tests reflect it. A `build.rs` guard fails the compile if that
-`.so` is stale. Current state is 147 tests, all passing.
+`.so` is stale. Current state is 151 tests, all passing.
 
 ### Deliberate tradeoffs on v2, not bugs
 
-`docs/DESIGN-v2.md` has an "Honest limitations" section with eighteen entries, plus numbered
+`docs/DESIGN-v2.md` has an "Honest limitations" section with nineteen entries, plus numbered
 design decisions. Those are considered and recorded, not oversights. Read them before
 reporting anything as a defect. The six most often mistaken for bugs:
 
@@ -108,11 +108,29 @@ this one was latent rather than live: it needed a future edit to
 program. A sibling of the same species turned up in the same pass — check 7's own
 rejection of a stale-era receipt turns out to depend on
 `CLOCK_SKEW_TOLERANCE_SECONDS <= MIN_COMPLAINT_WINDOW_SECONDS` holding, currently true by a
-48x margin but nowhere enforced in code (docs/DESIGN-v2.md, "Honest limitations"). Both are
-an assumed, unenforced, unrecorded relationship between two constants — a seam distinct from
+48x margin but, at the time, not actually what made check 7 correct (see below). Both are
+an assumed, unrecorded relationship between two constants — a seam distinct from
 the release/re-grant seam the first four bugs shared, and one a future constant edit can open
-without touching a single handler. Assume a sixth of either kind exists until you have
-checked.
+without touching a single handler.
+
+A sixth has since been fixed, and it is that same sibling: `release_permit`'s wait was
+`now >= revoked_at + complaint_window`, safe only if `CLOCK_SKEW_TOLERANCE_SECONDS <=
+complaint_window` for whatever permit is being released. A compile-time assertion already
+pinned `CLOCK_SKEW_TOLERANCE_SECONDS <= MIN_COMPLAINT_WINDOW_SECONDS`, but that assertion
+compares two constants, while `grant_permit` copies `complaint_window` off the live
+`Marketplace` with no re-validation against today's bounds (grandfathering, decision 10) —
+so a marketplace registered before a future increase to `MIN_COMPLAINT_WINDOW_SECONDS` could
+still be granting permits with a window below the new floor, at which point the assertion
+would keep passing (it never reads the stored field) while `release_permit`'s actual wait
+fell under the tolerance. Latent rather than live, exactly like the fifth: it needed a future
+constant edit to arm, not just today's handlers. Fixed by flooring at the point of use —
+`release_permit` now waits `revoked_at + complaint_window.max(CLOCK_SKEW_TOLERANCE_SECONDS)`
+(`earliest_release`, `instructions/release_permit.rs`) — the same shape as the fifth bug's
+fix. This was the third and last of three grandfathering-sensitive constant uses found this
+arc: the bond clamp (`raise_dispute` takes `min(permit.bond_bps, MAX_BOND_BPS)`) and
+`closable_after` were fixed earlier, this release-wait floor closes the third. All three
+stored fields a protocol constant is compared against are now bounded at the point of use
+rather than trusted to already sit inside the constant's range — that family is closed.
 
 ## Deliberate simplifications, as of now
 

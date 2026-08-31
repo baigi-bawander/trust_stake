@@ -140,24 +140,35 @@ pub const CLOCK_SKEW_TOLERANCE_SECONDS: i64 = 60 * 60;
 
 /// `raise_dispute`'s check 7 (`instructions/raise_dispute.rs`) rejects a
 /// stale-era receipt left over from a permit wound down through the slow
-/// `release_permit` path only while this holds. Derivation:
-/// `release_permit` forces the permit closed no earlier than
-/// `revoked_at + complaint_window`; `grant_permit`'s `init` can only
-/// re-occupy that PDA after the close, so the earliest a fresh
-/// `granted_at` can land is that same bound; check 7 accepts a receipt
-/// whenever `receipt.issued_at >= granted_at - CLOCK_SKEW_TOLERANCE_SECONDS`;
-/// and every old-era receipt is necessarily dated before `revoked_at`.
-/// Chaining those: an old-era receipt is rejected only for as long as
-/// `CLOCK_SKEW_TOLERANCE_SECONDS` does not exceed the wound-down permit's
-/// own `complaint_window`, and the shortest a window is ever allowed to be
-/// is `MIN_COMPLAINT_WINDOW_SECONDS`. The complaint-window check earlier
-/// in the handler (5) does not independently cover this: by the time it
-/// runs it is reading the *successor* permit's window, not the wound-down
-/// one the stale receipt actually belongs to. Currently safe by 48x (one
-/// hour against a two-day floor); violate it and a receipt from a fully
-/// wound-down era becomes filable against whatever gets granted next at
-/// the same permit PDA (docs/DESIGN-v2.md, "Honest limitations").
+/// `release_permit` path. Derivation: `release_permit` now floors its own
+/// wait at `earliest_release(revoked_at, complaint_window) = revoked_at +
+/// complaint_window.max(CLOCK_SKEW_TOLERANCE_SECONDS)`
+/// (`instructions/release_permit.rs`), so the permit closes no earlier
+/// than `revoked_at + CLOCK_SKEW_TOLERANCE_SECONDS` regardless of what
+/// `complaint_window` the permit actually carries; `grant_permit`'s
+/// `init` can only re-occupy that PDA after the close, so the earliest a
+/// fresh `granted_at` can land is that same bound; check 7 accepts a
+/// receipt whenever `receipt.issued_at >= granted_at -
+/// CLOCK_SKEW_TOLERANCE_SECONDS`; and every old-era receipt is necessarily
+/// dated before `revoked_at`. Chaining those, an old-era receipt is
+/// rejected unconditionally -- the floor makes this safe by construction,
+/// the same way `release_permit_early`'s own wait already was, rather
+/// than by an assumed relationship between two constants.
+///
+/// This assertion is no longer load-bearing for that guarantee: it used to
+/// be the only thing standing between the two constants drifting apart,
+/// on the false premise that the shortest a stored `complaint_window` can
+/// ever be is `MIN_COMPLAINT_WINDOW_SECONDS`. That premise does not hold
+/// under grandfathering -- `grant_permit` copies `complaint_window` off
+/// the live `Marketplace` with no re-validation against today's bounds,
+/// and `update_marketplace` only re-validates a field the caller actually
+/// supplies (`state/marketplace.rs`) -- so a marketplace registered before
+/// a future increase to `MIN_COMPLAINT_WINDOW_SECONDS` can still be
+/// granting permits with a window below the new floor. The assertion is
+/// kept anyway, as defence in depth: it costs nothing at compile time, and
+/// a wide margin between the two constants is still a healthy property of
+/// the deployment even though `release_permit` no longer depends on it.
 const _: () = assert!(
     CLOCK_SKEW_TOLERANCE_SECONDS <= MIN_COMPLAINT_WINDOW_SECONDS,
-    "CLOCK_SKEW_TOLERANCE_SECONDS must not exceed MIN_COMPLAINT_WINDOW_SECONDS -- raise_dispute check 7 would no longer reject a stale-era receipt after the slow release_permit path"
+    "CLOCK_SKEW_TOLERANCE_SECONDS must not exceed MIN_COMPLAINT_WINDOW_SECONDS -- kept as defence in depth; release_permit's own floor (earliest_release) is what actually guarantees raise_dispute check 7 rejects a stale-era receipt"
 );

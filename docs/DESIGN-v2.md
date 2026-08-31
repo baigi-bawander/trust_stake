@@ -196,21 +196,33 @@ Each of these is a decision with a reason, not an oversight.
   boundary because it was signed during wind-down," which check 7 cannot do from the receipt
   alone. A marketplace that stops signing receipts against a permit the instant it revokes it
   never triggers this at all.
-- **Check 7's rejection of a stale-era receipt depends on an inequality between two
-  constants that no code enforces.** `release_permit` forces `now >= revoked_at +
-  complaint_window` before a permit closes, and because `grant_permit` can only `init` a
-  successor at the same PDA, the earliest a fresh `granted_at` can land is that same bound.
-  Check 7 accepts a receipt whenever `receipt.issued_at >= granted_at -
-  CLOCK_SKEW_TOLERANCE_SECONDS`. An old-era receipt is always dated before `revoked_at`, so
-  it is rejected only for as long as `CLOCK_SKEW_TOLERANCE_SECONDS` does not exceed the old
-  permit's own window -- and the shortest a window is ever allowed to be is
-  `MIN_COMPLAINT_WINDOW_SECONDS`. The complaint-window check earlier in the handler (5) does
-  not independently save this: by the time it runs, it is reading the *successor* permit's
-  window, not the wound-down one the stale receipt actually belongs to. Currently safe by a
-  wide margin -- `CLOCK_SKEW_TOLERANCE_SECONDS` is one hour against a two-day floor, 48x --
-  but the safety lives entirely in that margin between two constants in `constants.rs`, not
-  in a checked invariant. Any future edit to either constant must preserve
-  `CLOCK_SKEW_TOLERANCE_SECONDS <= MIN_COMPLAINT_WINDOW_SECONDS`.
+- **Check 7's rejection of a stale-era receipt no longer depends on an unenforced inequality
+  between two constants; it depends on a floor `release_permit` now takes at the point of
+  use.** This entry originally described a live gap: `release_permit` forced only `now >=
+  revoked_at + complaint_window`, and the argument that check 7 then rejects every
+  stale-era receipt relied on the premise that `complaint_window` could never fall below
+  `MIN_COMPLAINT_WINDOW_SECONDS`. That premise was false under grandfathering, the same
+  species of bug `closable_after` had (previous entry): `grant_permit` copies
+  `complaint_window` off the live `Marketplace` with no re-validation against today's bounds,
+  and `update_marketplace` only re-validates a field the caller actually supplies
+  (`state/marketplace.rs`), so a marketplace registered before a future increase to
+  `MIN_COMPLAINT_WINDOW_SECONDS` could still be granting permits with a window below the new
+  floor. Fixed the same way as `closable_after`: `release_permit` now waits
+  `revoked_at + complaint_window.max(CLOCK_SKEW_TOLERANCE_SECONDS)`
+  (`earliest_release`, `instructions/release_permit.rs`), so the permit closes no earlier
+  than `revoked_at + CLOCK_SKEW_TOLERANCE_SECONDS` no matter how short its stored window is.
+  `release_permit_early` was already safe by construction the same way -- its wait is
+  `revoked_at + CLOCK_SKEW_TOLERANCE_SECONDS` outright, with no stored window in the
+  calculation at all (see that handler's doc comment for the R/L/G derivation both paths
+  share). So both release paths are now safe by construction rather than by an assumed
+  relationship between constants. The compile-time assertion
+  `CLOCK_SKEW_TOLERANCE_SECONDS <= MIN_COMPLAINT_WINDOW_SECONDS` (`constants.rs`) stays in
+  place as defence in depth -- it costs nothing and a wide margin between the two constants
+  is still worth keeping -- but it is no longer what makes check 7 correct. With this fix,
+  every stored field a protocol constant is compared against (`bond_bps`, the previous entry's
+  `complaint_window` inside `closable_after`, and now `complaint_window` inside the release
+  wait) is bounded at the point of use rather than trusted to already sit inside the
+  constant's range; that family of grandfathering-sensitive constant uses is now closed.
 - **`release_permit_early` erases outstanding buyers from the public record rather than
   merely closing their window.** The cooperative fast path (decision 8, above) lets the
   seller and the marketplace authority jointly skip the ordinary complaint-window wait, down
@@ -306,6 +318,18 @@ Each of these is a decision with a reason, not an oversight.
   none of those. Supporting any single extension safely means reasoning through that
   extension against all five handlers, which is what an entry in `ALLOWED_MINT_EXTENSIONS`
   will mean when one is ever added.
+- **`Config.authority` currently confers no powers.** Grepping every handler that loads
+  `Config` shows it read for exactly two things: `propose_config_authority` and
+  `accept_config_authority` read and write `config.authority`/`config.pending_authority`
+  themselves, to run the two-step transfer; every other handler that loads `Config`
+  (`initialize_stake`, `raise_dispute`) reads only `collateral_mint` or `chain_id`. There is
+  no protocol-level admin action gated on `config.authority` -- no pause, no parameter
+  change, no emergency lever -- so the two-step transfer machinery currently moves a key that
+  does nothing once moved. That is not a bug in the transfer logic; it means the key is
+  decorative until some future handler actually checks it, and whichever handler is first to
+  do so inherits whatever has happened to that key in the meantime (see "Upgrade authority is
+  a single ordinary keypair, not a multisig" under "Risks and open items" for the parallel
+  concern on the *upgrade* authority, a separate key from this one).
 
 ---
 
