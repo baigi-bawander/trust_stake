@@ -196,6 +196,36 @@ Each of these is a decision with a reason, not an oversight.
   boundary because it was signed during wind-down," which check 7 cannot do from the receipt
   alone. A marketplace that stops signing receipts against a permit the instant it revokes it
   never triggers this at all.
+- **Check 7's rejection of a stale-era receipt depends on an inequality between two
+  constants that no code enforces.** `release_permit` forces `now >= revoked_at +
+  complaint_window` before a permit closes, and because `grant_permit` can only `init` a
+  successor at the same PDA, the earliest a fresh `granted_at` can land is that same bound.
+  Check 7 accepts a receipt whenever `receipt.issued_at >= granted_at -
+  CLOCK_SKEW_TOLERANCE_SECONDS`. An old-era receipt is always dated before `revoked_at`, so
+  it is rejected only for as long as `CLOCK_SKEW_TOLERANCE_SECONDS` does not exceed the old
+  permit's own window -- and the shortest a window is ever allowed to be is
+  `MIN_COMPLAINT_WINDOW_SECONDS`. The complaint-window check earlier in the handler (5) does
+  not independently save this: by the time it runs, it is reading the *successor* permit's
+  window, not the wound-down one the stale receipt actually belongs to. Currently safe by a
+  wide margin -- `CLOCK_SKEW_TOLERANCE_SECONDS` is one hour against a two-day floor, 48x --
+  but the safety lives entirely in that margin between two constants in `constants.rs`, not
+  in a checked invariant. Any future edit to either constant must preserve
+  `CLOCK_SKEW_TOLERANCE_SECONDS <= MIN_COMPLAINT_WINDOW_SECONDS`.
+- **`release_permit_early` erases outstanding buyers from the public record rather than
+  merely closing their window.** The cooperative fast path (decision 8, above) lets the
+  seller and the marketplace authority jointly skip the ordinary complaint-window wait, down
+  to `CLOCK_SKEW_TOLERANCE_SECONDS` after revocation. Every buyer who has not yet raised a
+  dispute against that permit loses the ability to do so the moment it closes:
+  `raise_dispute` needs a live permit account to file against. Unlike `expire_dispute`,
+  which formally marks an already-open complaint `Abandoned` and leaves that record
+  onchain, this path never lets the complaint get raised in the first place, so no
+  `DisputeRaised` event is ever emitted for it. The event trail this design otherwise leans
+  on for offchain, attack-resistant reputation (see the counter-fabrication entries above)
+  simply has a gap where those orders should be, with nothing onchain marking that they
+  existed at all. Left unrecorded until now; the mechanism itself stays as designed, since a
+  seller and marketplace who both consent to an early close are exactly the actors the
+  ordinary window protects a buyer from -- the gap is only in what gets published about the
+  buyers still in flight when they do.
 - **A tightened protocol bound does not retroactively apply to marketplaces registered under
   the old one.** `grant_permit` reads `complaint_window` and `bond_bps` straight off the
   stored `Marketplace` account and never re-checks them against
@@ -210,6 +240,72 @@ Each of these is a decision with a reason, not an oversight.
   that registered in good faith out of granting any new permit at all the day the bound
   moves. Tightening a bound is a migration, not a constant edit, and needs its own plan for
   what happens to the marketplaces it leaves outside the new range.
+
+  That grandfathering had a sharper consequence than a marketplace merely keeping its old
+  settings: `raise_dispute` check 7's own replay guard leaned on the same bound holding
+  everywhere, not just at the marketplace that registered under it. `closable_after` is what
+  lets `close_dispute` reclaim a `DisputeRecord`'s rent once a complaint window has genuinely
+  closed, and deriving it from the *live* permit's own `complaint_window` meant a
+  grandfathered marketplace running a window wider than the current
+  `MAX_COMPLAINT_WINDOW_SECONDS` could have its `DisputeRecord` closed -- `close_dispute` is
+  permissionless -- before that marketplace's own, longer window had actually elapsed. The
+  freed PDA let the same still-valid receipt be filed again, and the same order slashed
+  twice. This specific consequence is fixed: `closable_after` is now derived from
+  `max(permit.complaint_window, MAX_COMPLAINT_WINDOW_SECONDS)` rather than the permit's own
+  window alone, so a grandfathered marketplace's wider window can no longer outlive the
+  record that blocks its receipts from being replayed. The grandfathering itself is
+  untouched and stays deliberate, for the reasons above.
+- **The bond percentage a grandfathered marketplace stores is clamped where the buyer is
+  charged, not where the permit is granted.** `grant_permit` copies `bond_bps` onto the
+  permit verbatim, for the grandfathering reason in the entry above; `raise_dispute` then
+  takes `min(permit.bond_bps, MAX_BOND_BPS)` when it computes the bond. Without that, a
+  marketplace registered under a higher ceiling would keep granting permits at the old rate
+  and every buyer filing there would have to post a larger bond than today's ceiling
+  permits. The fix deliberately does not go in `grant_permit`: a bounds check there would
+  lock a marketplace that registered in good faith out of granting any permit at all the day
+  the constant moves, which is the outcome the grandfathering exists to avoid. Note that
+  this clamps *down* where `closable_after` clamps *up*. The two are not inconsistent: each
+  takes the direction that protects the party who cannot defend themselves. A buyer cannot
+  negotiate the rate they are charged, so the bond takes the smaller of the two rates; a
+  replay guard must outlive every filing window that could apply to it, so `closable_after`
+  takes the longer of the two windows.
+- **The collateral mint may carry no token extensions at all.** `initialize_config` reads the
+  mint's extension list and rejects anything outside `ALLOWED_MINT_EXTENSIONS`, which is
+  empty, so a Classic Token Program mint passes and every Token Extensions mint carrying any
+  extension is refused: transfer fees, transfer hooks, permanent delegates, pausable mints,
+  default-frozen accounts, confidential transfers, and interest-bearing mints alike. An
+  allow-list rather than a list of banned extensions, so that extension types added to the
+  Token Extensions Program in future are denied by default instead of admitted by default.
+  Widening it later is a deliberate and safe change: `Config.collateral_mint` is pinned per
+  deployment, so admitting a new extension only affects which mints a fresh deployment can
+  pin, never the collateral an already-live deployment holds.
+
+  The case that forces this is `TransferFeeConfig`. A fee-bearing mint skims a percentage in
+  transit, so a buyer's bond would arrive in the bond vault short of the amount
+  `raise_dispute` records on the `DisputeRecord`; `resolve_dispute` and `expire_dispute`
+  would each then try to move the full recorded bond out of a vault holding less and revert
+  permanently, leaving `open_disputes` stuck at 1 and the seller's committed collateral
+  locked with it. Because there is no `update_config`, that is unrecoverable short of a
+  program upgrade.
+
+  What is checked is whether the mint *carries* an extension, never what that extension is
+  set to today. A transfer fee can be created at zero basis points and raised later by the
+  `transfer_fee_config_authority` through `SetTransferFee`, taking effect about two epochs
+  on, so reading today's fee and accepting zero would promise nothing. Whether a mint carries
+  an extension at all is fixed when the mint is created and can never change, which makes it
+  the only durable thing to test.
+
+  The more general fix, having each token-moving handler measure what actually arrived rather
+  than trusting what it sent, was considered and deferred. It is disproportionate for a
+  prototype: it means a balance read before and after every transfer in five handlers, on
+  every path, for a hazard this deployment does not face at all. It is also not sufficient on
+  its own, which is the stronger reason. Fees are one extension out of many, and the others
+  break different things: a transfer hook runs third-party code inside every transfer, a
+  permanent delegate can move collateral straight out of a vault with no handler involved,
+  and a pausable mint can freeze slashing and withdrawal together. Conservation checks answer
+  none of those. Supporting any single extension safely means reasoning through that
+  extension against all five handlers, which is what an entry in `ALLOWED_MINT_EXTENSIONS`
+  will mean when one is ever added.
 
 ---
 

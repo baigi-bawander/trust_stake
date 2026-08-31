@@ -10,7 +10,7 @@ Staked reputation for peer-to-peer marketplaces on Solana. Full pitch, architect
   place to v2 on 2026-08-24 (data length 649,264 bytes, deployed in slot 487349484). v1 no
   longer exists at this address; v1's own transaction history stays valid on Solana Explorer
   regardless, since upgrading a program does not change chain history.
-- **Tests:** `main` has 132 tests passing (`cargo test` from `programs/truststake/`, LiteSVM),
+- **Tests:** `main` has 147 tests passing (`cargo test` from `programs/truststake/`, LiteSVM),
   plus a real devnet run with every signature recorded in
   [docs/TESTING.md](docs/TESTING.md).
 - **Repo:** `https://github.com/baigi-bawander/trust_stake`
@@ -47,19 +47,26 @@ a production migration.
 OpenSSL build fails on a clock-skew check. LiteSVM loads the pre-built
 `target/deploy/truststake.so` rather than the native test binary, so any handler change needs
 `anchor build` before the tests reflect it. A `build.rs` guard fails the compile if that
-`.so` is stale. Current state is 132 tests, all passing.
+`.so` is stale. Current state is 147 tests, all passing.
 
 ### Deliberate tradeoffs on v2, not bugs
 
-`docs/DESIGN-v2.md` has an "Honest limitations" section with twelve entries, plus numbered
+`docs/DESIGN-v2.md` has an "Honest limitations" section with eighteen entries, plus numbered
 design decisions. Those are considered and recorded, not oversights. Read them before
-reporting anything as a defect. The five most often mistaken for bugs:
+reporting anything as a defect. The six most often mistaken for bugs:
 
 - **`INITIAL_ADMIN` is a hardcoded pubkey.** It stops a freshly deployed program having its
   config front-run by whoever notices the deployment first. Authority moves off it afterwards
   through the two-step transfer.
 - **`Marketplace.bond_bps` has a ceiling but no floor.** Zero is legal on purpose. A floor
-  would price out honest buyers with small claims.
+  would price out honest buyers with small claims. The ceiling binds at registration and
+  again where the bond is charged: `grant_permit` copies a grandfathered rate across
+  unchecked on purpose, and `raise_dispute` takes `min(permit.bond_bps, MAX_BOND_BPS)`.
+- **The collateral mint must carry no token extensions.** `initialize_config` checks the
+  mint's extension list against `ALLOWED_MINT_EXTENSIONS`, which is empty, so a Classic Token
+  Program mint passes and every Token Extensions mint carrying an extension is refused. An
+  allow-list so future extension types are denied by default; widening it is a deliberate,
+  safe change, since `Config.collateral_mint` is pinned per deployment.
 - **`SellerStake.disputes_total` only ever increases, and is inflatable.** The counters are a
   convenience. Attack-resistant reputation is computed offchain from events, which carry the
   marketplace.
@@ -86,8 +93,26 @@ fixed by `granted_at` and a bound in `raise_dispute` (docs/DESIGN-v2.md, check 7
 wait, so a permit could be wound down and a new one granted at the same address inside the
 clock-skew tolerance `raise_dispute`'s check 7 depends on, fixed by requiring
 `now >= permit.revoked_at + CLOCK_SKEW_TOLERANCE_SECONDS`, deliberately reusing check 7's own
-constant since the two are one guarantee split across two handlers. Assume a fifth of the same
-kind exists until you have checked.
+constant since the two are one guarantee split across two handlers.
+
+A fifth has since turned up: `closable_after`, the field that lets `close_dispute` reclaim a
+`DisputeRecord`'s rent, was derived from the *live* permit's own `complaint_window` rather
+than the protocol ceiling, so a marketplace grandfathered onto a window wider than the
+current `MAX_COMPLAINT_WINDOW_SECONDS` (see docs/DESIGN-v2.md's grandfathering entry) could
+have its `DisputeRecord` closed by anyone before that marketplace's own longer window had
+elapsed, freeing the PDA for the same still-valid receipt to be filed again and the same
+order slashed twice — fixed by deriving `closable_after` from
+`max(permit.complaint_window, MAX_COMPLAINT_WINDOW_SECONDS)` instead. Unlike the first four,
+this one was latent rather than live: it needed a future edit to
+`MAX_COMPLAINT_WINDOW_SECONDS` to arm it, not just the sequence of handlers already in the
+program. A sibling of the same species turned up in the same pass — check 7's own
+rejection of a stale-era receipt turns out to depend on
+`CLOCK_SKEW_TOLERANCE_SECONDS <= MIN_COMPLAINT_WINDOW_SECONDS` holding, currently true by a
+48x margin but nowhere enforced in code (docs/DESIGN-v2.md, "Honest limitations"). Both are
+an assumed, unenforced, unrecorded relationship between two constants — a seam distinct from
+the release/re-grant seam the first four bugs shared, and one a future constant edit can open
+without touching a single handler. Assume a sixth of either kind exists until you have
+checked.
 
 ## Deliberate simplifications, as of now
 
@@ -102,22 +127,79 @@ See `docs/DESIGN-v2.md`, "What this design deliberately does not do" and "Honest
 
 ## Working in this repo
 
-- **Program logic:** `programs/truststake/src/` — `lib.rs` is the entrypoint/index, `state.rs` defines the three accounts, `instructions/` has the four handlers.
-- **Unit tests:** `programs/truststake/tests/test_truststake.rs` — LiteSVM, in-process, fast. Run with `cargo test` from `programs/truststake/`.
+- **Program logic:** `programs/truststake/src/` — `lib.rs` is the entrypoint/index (19 `pub fn`
+  handlers, counted directly off it), `state.rs` now just re-exports `state/`, which defines
+  five accounts (`config.rs`, `dispute_record.rs`, `marketplace.rs`, `seller_stake.rs`,
+  `slash_permit.rs` — `ls programs/truststake/src/state/`), `instructions/` has the nineteen
+  handlers.
+- **Unit tests:** `programs/truststake/tests/` (`ls` — there is no `test_truststake.rs`) holds
+  four LiteSVM integration suites plus a shared harness: `test_phase1.rs` (32 tests) covers the
+  nine foundation handlers — config and marketplace setup, authority transfer, staking;
+  `test_phase2.rs` (33 tests) covers the six collateral-lifecycle handlers —
+  `withdraw_stake`, `grant_permit`, `increase_permit`, `revoke_permit`, `release_permit`,
+  `release_permit_early`; `test_phase3.rs` (71 tests) covers the four dispute handlers —
+  `raise_dispute`, `resolve_dispute`, `expire_dispute`, `close_dispute` — including the
+  Ed25519/introspection attack-probe section; `test_devnet_demo_parity.rs` (1 test) replays
+  `examples/devnet_demo.rs`'s instruction sequence against LiteSVM before it spends real devnet
+  SOL; `common/mod.rs` is the shared `World` test harness both use, not a test file itself. Run
+  with `OPENSSL_NO_VENDOR=1 cargo test` from `programs/truststake/`.
 - **Real devnet demo:** `programs/truststake/examples/devnet_demo.rs` — walks two marketplaces (v2's SPL-token collateral, not v1's native SOL) sharing one seller's stake as real transactions: one stake, two independent permits, a withdrawal against the cap that succeeds next to one that is meant to fail, and a dispute proved through the Ed25519 precompile. Gated behind the `devnet_demo` Cargo feature; run with `cargo run --example devnet_demo --features devnet_demo` from `programs/truststake/`. The signing wallet must match `constants::INITIAL_ADMIN`. It funds several throwaway keypairs by direct transfer (not airdrop, since devnet airdrops are rate-limited) and is idempotent on `initialize_config` and the test mint it pins, reusing both from the existing `Config` account if one is already there. `tests/test_devnet_demo_parity.rs` proves the same instruction sequence against LiteSVM first, before any of it spends devnet SOL.
-- **Build:** `anchor build` (not plain `cargo build` — Solana programs need the SBF target, which `anchor build` invokes via `cargo build-sbf`).
-- **Deploy:** `anchor deploy` / `solana program deploy`, costs real devnet SOL (program
-  rent-exemption is roughly 6,960 lamports per byte of the compiled `.so`). Check `solana
-  balance --url devnet` first. If a deploy fails partway, check `solana program show --buffers
-  --url devnet` before retrying; there may be a paid-for buffer account worth resuming from
-  (`solana program deploy --buffer <address> ...`) instead of paying rent again from scratch.
+- **Build:** `anchor build` (not plain `cargo build` — Solana programs need the SBF target, which `anchor build` invokes via `cargo build-sbf`). `target/deploy/truststake-keypair.json`
+  (pubkey `G8B59KZpf7siepeb3PRX3KuPk4LC1LZarF8YmuPHGUZ`, confirmed with `solana-keygen pubkey`)
+  does not match `declare_id!` in `src/lib.rs` or either `[programs.*]` entry in `Anchor.toml`
+  (both `3Vc6M8Az9h2GtDmqqhQKURqTKKygNfekQq7PoJris6V2`, the deployed program). That keypair is a
+  gitignored build artifact Anchor generated on some earlier build; the deployed program's own
+  keypair was never kept locally. `anchor build` (verified on anchor-cli 1.1.2) prints `Program
+  ID mismatch detected` and points at `anchor keys sync` and `--ignore-keys`, but the mismatch
+  is a warning, not a build failure — the build still exits 0 and produces the `.so` either way,
+  with or without `--ignore-keys`. **Never run `anchor keys sync`** — it resolves the mismatch
+  the wrong way, rewriting `declare_id!` in source to match the throwaway keypair. Every PDA in
+  this program derives from the program ID, so the rebuilt binary would address an entirely
+  different set of accounts, orphaning the deployed program and all its devnet state, and
+  invalidating the published IDL.
+- **Deploy:** never plain `anchor deploy` — confirmed via `anchor deploy --help`, it defaults to
+  `--program-keypair target/deploy/truststake-keypair.json`, so it would deploy a brand-new
+  program at `G8B59KZpf7siepeb3PRX3KuPk4LC1LZarF8YmuPHGUZ` and spend devnet SOL, rather than
+  upgrading the deployed one. An upgrade goes through `solana program deploy --program-id
+  3Vc6M8Az9h2GtDmqqhQKURqTKKygNfekQq7PoJris6V2 target/deploy/truststake.so`, authorised by
+  `--upgrade-authority` (default: the configured keypair, `~/.config/solana/id.json`, confirmed
+  with `solana config get`) — confirmed via `solana program deploy --help`, `--program-id` "can
+  be an address for upgrades," and the program keypair is not needed for it. Either way, this
+  costs real devnet SOL (program rent-exemption is roughly 6,960 lamports per byte of the
+  compiled `.so`). Check `solana balance --url devnet` first. If a deploy fails partway, check
+  `solana program show --buffers --url devnet` before retrying; there may be a paid-for buffer
+  account worth resuming from (`solana program deploy --buffer <address> ...`) instead of paying
+  rent again from scratch.
 - **IDL, after any future deploy:** run `anchor idl upgrade
   3Vc6M8Az9h2GtDmqqhQKURqTKKygNfekQq7PoJris6V2 -f target/idl/truststake.json
   --provider.cluster devnet`, never `anchor idl init`. The IDL account already exists (created
   2026-08-24), and `init` fails against an account that is already allocated. A stale IDL is
   worse than no IDL: Anchor numbers error codes positionally as 6000 + index and publishes
   that numbering in the IDL, so an outdated one mis-names every error and mis-decodes any
-  instruction whose arguments changed.
+  instruction whose arguments changed. The onchain IDL is currently stale in exactly this
+  append-only way and owed an `anchor idl upgrade` at the next deploy: `TrustStakeError` had 38
+  variants (`NotInitialAdmin` through `InvalidChainId`) at commit `34c5483`, the last commit to
+  touch `error.rs` before the 2026-08-24 upload, and has 40 now (`git diff
+  programs/truststake/src/error.rs` against that commit), the two new ones — `AccountVersionMismatch`
+  (6038) and `UnsupportedMintExtension` (6039) — added since but not yet deployed. Because both
+  were appended rather than inserted, every code the published IDL already knows still resolves
+  correctly; it is just missing names for 6038 and 6039 until the next upgrade.
+- **Before changing any protocol constant or any field on a stored account, search the
+  entire project for every site that reads it, and report those sites before making the
+  change.** `ACCOUNT_VERSION` was written at five call sites and read at zero for the
+  project's entire history until this task gave it a constraint; a thirty-second search would
+  have shown that at any point, and nobody ran one.
+- **Every count or file path written into this file must be verified by running a command at
+  the moment of writing it — never by reasoning, reading, or copying a figure from an earlier
+  version of this file or from a prior conversation.** This file has carried a stale count on
+  four separate occasions, each found by accident during unrelated work: `test_truststake.rs`
+  named here after `tests/` had already moved to `test_phase1.rs`/`test_phase2.rs`/`test_phase3.rs`;
+  a `checked_*` call-site count and an `.rs`-file count both left uncorrected after the code
+  they counted grew; and "all four cross-phase bugs" left standing after this same file's own
+  "Review history on v2" section had already recorded a fifth. A task that changes the test
+  count, the handler count, the account count, or the "Honest limitations" entry count in
+  `docs/DESIGN-v2.md` must update this file in the same session — not defer it, since deferred
+  is how the previous four went stale.
 
 ## Solana MCP server
 
@@ -178,18 +260,20 @@ reasoning. Re-run that comparison if the module changes.
 ### `program_autofixer`, and why it is not evidence
 
 Required `code` (one file or concatenated modules as a string); optional `filename`,
-`framework`, `dismissed`. A per-file pass over all 33 `.rs` files here returned zero issues,
-independently corroborated: 27 `checked_*` call sites and no raw balance arithmetic; three
-`UncheckedAccount` fields all carrying `/// CHECK:`; every `init` either given `space` or a
-token account under the rule's own exception.
+`framework`, `dismissed`. A per-file pass over all 33 `.rs` files here (`find
+programs/truststake/src -name '*.rs' | wc -l`) returned zero issues, independently
+corroborated: 34 `checked_*` call sites (`grep -rn checked_ programs/truststake/src/ | wc -l`)
+and no raw balance arithmetic; three `UncheckedAccount` fields all carrying `/// CHECK:`; every
+`init` either given `space` or a token account under the rule's own exception.
 
 It is a single-file static linter over a closed ruleset — no cross-file dataflow, no
 instruction-ordering model, no view of the state machine. A control run on deliberately
 broken code measured the ceiling: a handler with **no authorization check at all**, letting
 any caller reassign admin and drain the vault, was reported only as `low — AccountInfo opts
 out of typed validation`, while a missing `space` attribute was rated `high`. It checks
-shapes, not authority, ordering, or state. All four cross-phase bugs (see "Review history on
-v2") are strictly harder than the one it missed.
+shapes, not authority, ordering, or state. All five cross-phase bugs (see "Review history on
+v2," which documents a fifth beyond the four originally found here) are strictly harder than
+the one it missed.
 
 So: optional shape check before committing program changes, nothing more. A clean run is
 never evidence in a cross-phase discussion and never shortens one. There is no dismissal
