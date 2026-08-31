@@ -1,7 +1,8 @@
 use anchor_lang::prelude::*;
 
 use crate::{
-    constants::{CONFIG_SEED, SEED_VERSION},
+    constants::{ACCOUNT_VERSION, CONFIG_SEED, SEED_VERSION},
+    error::TrustStakeError,
     events::ConfigAuthorityProposed,
     state::Config,
 };
@@ -19,6 +20,7 @@ pub struct ProposeConfigAuthorityAccountConstraints<'info> {
         seeds = [CONFIG_SEED, SEED_VERSION],
         bump = config.bump,
         has_one = authority,
+        constraint = config.version == ACCOUNT_VERSION @ TrustStakeError::AccountVersionMismatch,
     )]
     pub config: Account<'info, Config>,
 }

@@ -27,12 +27,12 @@ use solana_system_interface::error::SystemError;
 use solana_transaction::versioned::VersionedTransaction;
 use truststake::{
     constants::{
-        CHAIN_ID_DEVNET, CLOCK_SKEW_TOLERANCE_SECONDS, DISPUTE_EXPIRY_SECONDS, MAX_BOND_BPS,
+        ACCOUNT_VERSION, CHAIN_ID_DEVNET, CLOCK_SKEW_TOLERANCE_SECONDS, DISPUTE_EXPIRY_SECONDS, MAX_BOND_BPS,
         MAX_COMPLAINT_WINDOW_SECONDS, MIN_COMPLAINT_WINDOW_SECONDS, RECEIPT_DOMAIN, SECONDS_PER_DAY,
     },
     error::TrustStakeError,
     receipt::OrderReceipt,
-    state::DisputeStatus,
+    state::{DisputeRecord, DisputeStatus, Marketplace},
 };
 
 const SOL: u64 = 1_000_000_000;
@@ -1746,6 +1746,125 @@ fn test_dispute_replay_blocked_across_regrant_with_longer_window() {
     assert!(
         result.is_err(),
         "the same receipt must not be filable again through a revoke/release/re-grant cycle that only widens the window"
+    );
+}
+
+#[test]
+fn test_dispute_closable_after_uses_permit_window_when_it_exceeds_protocol_max() {
+    // `MAX_COMPLAINT_WINDOW_SECONDS` is a compile-time constant, so this
+    // scenario -- a marketplace grandfathered with a `complaint_window`
+    // above today's ceiling, per grant_permit.rs's verbatim copy and
+    // docs/DESIGN-v2.md's note that this is deliberate -- cannot be
+    // produced by lowering the constant from a test, nor by
+    // register_marketplace, which calls validate_complaint_window and
+    // would reject it outright. The Marketplace account is written
+    // directly through the LiteSVM harness instead, standing in for a
+    // marketplace that predates a future release lowering the constant
+    // below a window it was already granted permits under.
+    let mut world = setup_world();
+    let market = setup_marketplace(&mut world, 64, MIN_COMPLAINT_WINDOW_SECONDS, DEFAULT_BOND_BPS);
+    let (seller, _seller_token_account) = setup_staked_seller(&mut world, usdc(300));
+
+    let account = world.svm.get_account(&market.pubkey).expect("marketplace exists");
+    let mut marketplace = Marketplace::try_deserialize(&mut account.data.as_slice()).expect("valid Marketplace data");
+    let oversized_window = MAX_COMPLAINT_WINDOW_SECONDS + SECONDS_PER_DAY;
+    marketplace.complaint_window = oversized_window;
+    let mut data = Vec::new();
+    marketplace.try_serialize(&mut data).expect("serialize Marketplace");
+    world
+        .svm
+        .set_account(market.pubkey, Account { data, ..account })
+        .expect("plant the oversized-window marketplace");
+
+    world
+        .grant_permit(&seller, market.pubkey, usdc(150))
+        .expect("grant_permit succeeds");
+    let (buyer, buyer_token_account) = setup_buyer(&mut world, usdc(100));
+
+    let receipt = receipt_for(&world, &market, &seller, &buyer, order_id(0xD1), usdc(80));
+    world
+        .raise_dispute(
+            &buyer,
+            buyer_token_account,
+            market.pubkey,
+            &receipt,
+            &market.receipt_signer,
+            usdc(80),
+        )
+        .expect("raise_dispute succeeds");
+
+    let dispute = world.read_dispute(&world.dispute_pda(&market.pubkey, &seller.pubkey(), &receipt.order_id));
+    assert_eq!(
+        dispute.closable_after,
+        receipt.issued_at + oversized_window,
+        "closable_after must bound on the permit's own (wider) window, not the protocol maximum alone"
+    );
+}
+
+#[test]
+fn test_dispute_bond_clamps_to_protocol_max_bond_bps() {
+    // Same shape as
+    // `test_dispute_closable_after_uses_permit_window_when_it_exceeds_protocol_max`
+    // above, and for the same reason: `register_marketplace` calls
+    // validate_bond_bps and would reject a rate above the ceiling, and
+    // MAX_BOND_BPS is a compile-time constant a test cannot lower. The
+    // Marketplace account is written directly through the harness,
+    // standing in for one grandfathered from a release whose ceiling was
+    // higher than today's.
+    let mut world = setup_world();
+    let market = setup_marketplace(&mut world, 0xB0, MIN_COMPLAINT_WINDOW_SECONDS, DEFAULT_BOND_BPS);
+    let (seller, _seller_token_account) = setup_staked_seller(&mut world, usdc(300));
+
+    let account = world.svm.get_account(&market.pubkey).expect("marketplace exists");
+    let mut marketplace = Marketplace::try_deserialize(&mut account.data.as_slice()).expect("valid Marketplace data");
+    let grandfathered_bond_bps = MAX_BOND_BPS + 3_000;
+    marketplace.bond_bps = grandfathered_bond_bps;
+    let mut data = Vec::new();
+    marketplace.try_serialize(&mut data).expect("serialize Marketplace");
+    world
+        .svm
+        .set_account(market.pubkey, Account { data, ..account })
+        .expect("plant the grandfathered marketplace");
+
+    world
+        .grant_permit(&seller, market.pubkey, usdc(150))
+        .expect("grant_permit succeeds");
+
+    // grant_permit copies the rate across verbatim, deliberately: a
+    // marketplace that registered in good faith must not be locked out of
+    // granting permits the day the constant moves (docs/DESIGN-v2.md).
+    // The clamp belongs at the point the bond is charged, so the permit
+    // is expected to still be carrying the higher rate here.
+    let permit = world.read_permit(&world.permit_pda(&seller.pubkey(), &market.pubkey));
+    assert_eq!(permit.bond_bps, grandfathered_bond_bps);
+
+    let (buyer, buyer_token_account) = setup_buyer(&mut world, usdc(100));
+    let claim = usdc(80);
+    let receipt = receipt_for(&world, &market, &seller, &buyer, order_id(0xB0), claim);
+    world
+        .raise_dispute(
+            &buyer,
+            buyer_token_account,
+            market.pubkey,
+            &receipt,
+            &market.receipt_signer,
+            claim,
+        )
+        .expect("raise_dispute succeeds");
+
+    // 20% of $80, today's ceiling, not the 50% the permit stores. The
+    // buyer holds $100, so the unclamped $40 bond would also have been
+    // affordable: this fails on the figure, not on funds.
+    let dispute = world.read_dispute(&world.dispute_pda(&market.pubkey, &seller.pubkey(), &receipt.order_id));
+    assert_eq!(
+        dispute.bond,
+        usdc(16),
+        "the bond must be charged at today's ceiling, not the permit's grandfathered rate"
+    );
+    assert_eq!(
+        world.token_balance(&buyer_token_account),
+        usdc(84),
+        "the buyer must be debited the clamped bond and no more"
     );
 }
 
@@ -3601,6 +3720,53 @@ fn test_rent_refund_on_close() {
         world.svm.get_account(&dispute_pubkey).is_none(),
         "the record is genuinely gone, not merely emptied"
     );
+}
+
+#[test]
+fn test_resolve_dispute_rejects_wrong_account_version() {
+    // Stand in for a DisputeRecord written by a future layout: nothing in
+    // the current instruction set can produce a stored version other than
+    // ACCOUNT_VERSION, so write one directly into account state via the
+    // harness, the same way test_phase1.rs's
+    // test_update_marketplace_grandfathers_stored_settings stands in for
+    // an out-of-bounds bond_bps.
+    let Scenario {
+        mut world,
+        market,
+        seller,
+        buyer,
+        buyer_token_account,
+        ..
+    } = scenario(93);
+
+    let receipt = receipt_for(&world, &market, &seller, &buyer, order_id(0xE1), usdc(80));
+    world
+        .raise_dispute(
+            &buyer,
+            buyer_token_account,
+            market.pubkey,
+            &receipt,
+            &market.receipt_signer,
+            usdc(80),
+        )
+        .unwrap();
+
+    let dispute_pubkey = world.dispute_pda(&market.pubkey, &seller.pubkey(), &receipt.order_id);
+    let mut account = world.svm.get_account(&dispute_pubkey).expect("dispute exists");
+    let mut state = DisputeRecord::try_deserialize(&mut account.data.as_slice()).expect("valid DisputeRecord data");
+    state.version = ACCOUNT_VERSION + 1;
+    let mut data = Vec::new();
+    state
+        .try_serialize(&mut data)
+        .expect("serialize the forced-mismatched dispute state");
+    account.data = data;
+    world
+        .svm
+        .set_account(dispute_pubkey, account)
+        .expect("force a wrong account version");
+
+    let result = world.resolve_dispute(&market.arbiter, market.pubkey, receipt.order_id, buyer_token_account, true);
+    assert_error_code(&result, u32::from(TrustStakeError::AccountVersionMismatch));
 }
 
 // ---------------------------------------------------------------------

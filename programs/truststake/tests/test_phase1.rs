@@ -13,9 +13,11 @@ use solana_keypair::Keypair;
 use solana_signer::Signer;
 use solana_system_interface::error::SystemError;
 use truststake::{
-    constants::{CHAIN_ID_DEVNET, MAX_BOND_BPS, MAX_COMPLAINT_WINDOW_SECONDS, MIN_COMPLAINT_WINDOW_SECONDS},
+    constants::{
+        ACCOUNT_VERSION, CHAIN_ID_DEVNET, MAX_BOND_BPS, MAX_COMPLAINT_WINDOW_SECONDS, MIN_COMPLAINT_WINDOW_SECONDS,
+    },
     error::TrustStakeError,
-    state::Marketplace,
+    state::{Config, Marketplace, SellerStake},
 };
 
 const SOL: u64 = 1_000_000_000;
@@ -88,6 +90,45 @@ fn test_initialize_config_rejects_unknown_chain_id() {
         world.svm.get_account(&world.config_pda()).is_none(),
         "config must not have been created"
     );
+}
+
+#[test]
+fn test_initialize_config_rejects_mint_carrying_an_extension() {
+    let mut world = World::new();
+    let admin = initial_admin_keypair();
+
+    // Zero basis points, not the 100 the mint-binding test uses: a fee
+    // that is currently zero is exactly the case reading
+    // `transfer_fee_basis_points` would wave through, and the
+    // `transfer_fee_config_authority` can raise it later through
+    // `SetTransferFee`. Carrying the extension at all is fixed at mint
+    // creation, so that is what the handler must test.
+    let fee_mint = world.create_transfer_fee_mint(0, u64::MAX);
+
+    let result = world.initialize_config_with_mint(&admin, DEFAULT_CHAIN_ID, fee_mint);
+    assert_error_code(&result, u32::from(TrustStakeError::UnsupportedMintExtension));
+    assert!(
+        world.svm.get_account(&world.config_pda()).is_none(),
+        "config must not have been created"
+    );
+}
+
+#[test]
+fn test_initialize_config_accepts_classic_mint_with_no_extensions() {
+    let mut world = World::new();
+    let admin = initial_admin_keypair();
+
+    // A Classic Token Program mint carries no extension data at all, and
+    // reaches the extension check through the same path
+    // `test_initialize_config_rejects_mint_carrying_an_extension` uses.
+    // `create_extra_mint` rather than `world.mint` so this is a mint the
+    // harness has never otherwise touched.
+    let classic_mint = world.create_extra_mint();
+
+    world
+        .initialize_config_with_mint(&admin, DEFAULT_CHAIN_ID, classic_mint)
+        .expect("a classic mint with no extensions must still be pinnable");
+    assert_eq!(world.read_config().collateral_mint, classic_mint);
 }
 
 #[test]
@@ -173,6 +214,36 @@ fn test_config_authority_transfer_succeeds() {
     let config = world.read_config();
     assert_eq!(config.authority, new_authority.pubkey());
     assert_eq!(config.pending_authority, Pubkey::default());
+}
+
+#[test]
+fn test_propose_config_authority_rejects_wrong_account_version() {
+    // Stand in for a Config written by a future layout: nothing in the
+    // current instruction set can produce a stored version other than
+    // ACCOUNT_VERSION, so write one directly into account state via the
+    // harness, the same way test_update_marketplace_grandfathers_stored_settings
+    // stands in for an out-of-bounds bond_bps.
+    let mut world = World::new();
+    let admin = initial_admin_keypair();
+    world.initialize_config(&admin, DEFAULT_CHAIN_ID).unwrap();
+
+    let config_pubkey = world.config_pda();
+    let mut account = world.svm.get_account(&config_pubkey).expect("config exists");
+    let mut state = Config::try_deserialize(&mut account.data.as_slice()).expect("valid Config data");
+    state.version = ACCOUNT_VERSION + 1;
+    let mut data = Vec::new();
+    state
+        .try_serialize(&mut data)
+        .expect("serialize the forced-mismatched config state");
+    account.data = data;
+    world
+        .svm
+        .set_account(config_pubkey, account)
+        .expect("force a wrong account version");
+
+    let new_authority = funded_keypair(&mut world);
+    let result = world.propose_config_authority(&admin, new_authority.pubkey());
+    assert_error_code(&result, u32::from(TrustStakeError::AccountVersionMismatch));
 }
 
 // ---------------------------------------------------------------------
@@ -521,6 +592,31 @@ fn test_update_marketplace_signer_rotation_bookkeeping() {
 }
 
 #[test]
+fn test_update_marketplace_rejects_wrong_account_version() {
+    // Same technique as test_propose_config_authority_rejects_wrong_account_version.
+    let mut world = World::new();
+    let admin = initial_admin_keypair();
+    world.initialize_config(&admin, DEFAULT_CHAIN_ID).unwrap();
+    let (authority, marketplace) = setup_marketplace(&mut world, 90);
+
+    let mut account = world.svm.get_account(&marketplace).expect("marketplace exists");
+    let mut state = Marketplace::try_deserialize(&mut account.data.as_slice()).expect("valid Marketplace data");
+    state.version = ACCOUNT_VERSION + 1;
+    let mut data = Vec::new();
+    state
+        .try_serialize(&mut data)
+        .expect("serialize the forced-mismatched marketplace state");
+    account.data = data;
+    world
+        .svm
+        .set_account(marketplace, account)
+        .expect("force a wrong account version");
+
+    let result = world.update_marketplace(&authority, marketplace, None, None, Some(MAX_COMPLAINT_WINDOW_SECONDS), None);
+    assert_error_code(&result, u32::from(TrustStakeError::AccountVersionMismatch));
+}
+
+#[test]
 fn test_marketplace_authority_transfer_succeeds() {
     let mut world = World::new();
     let admin = initial_admin_keypair();
@@ -673,6 +769,34 @@ fn test_add_stake_rejects_foreign_token_account() {
 
     let result = world.add_stake(&seller, foreign_token_account, usdc(10));
     assert_error_code(&result, u32::from(anchor_lang::error::ErrorCode::ConstraintTokenOwner));
+}
+
+#[test]
+fn test_add_stake_rejects_wrong_account_version() {
+    // Same technique as test_propose_config_authority_rejects_wrong_account_version.
+    let mut world = World::new();
+    let admin = initial_admin_keypair();
+    world.initialize_config(&admin, DEFAULT_CHAIN_ID).unwrap();
+    let seller = funded_keypair(&mut world);
+    world.initialize_stake(&seller).unwrap();
+
+    let stake_pubkey = world.stake_pda(&seller.pubkey());
+    let mut account = world.svm.get_account(&stake_pubkey).expect("stake exists");
+    let mut state = SellerStake::try_deserialize(&mut account.data.as_slice()).expect("valid SellerStake data");
+    state.version = ACCOUNT_VERSION + 1;
+    let mut data = Vec::new();
+    state
+        .try_serialize(&mut data)
+        .expect("serialize the forced-mismatched stake state");
+    account.data = data;
+    world
+        .svm
+        .set_account(stake_pubkey, account)
+        .expect("force a wrong account version");
+
+    let seller_token_account = world.create_funded_token_account(world.mint, seller.pubkey(), usdc(100));
+    let result = world.add_stake(&seller, seller_token_account, usdc(10));
+    assert_error_code(&result, u32::from(TrustStakeError::AccountVersionMismatch));
 }
 
 #[test]

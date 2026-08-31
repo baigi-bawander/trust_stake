@@ -1,7 +1,7 @@
 use anchor_lang::prelude::*;
 
 use crate::{
-    constants::{PERMIT_SEED, SEED_VERSION, STAKE_SEED},
+    constants::{ACCOUNT_VERSION, PERMIT_SEED, SEED_VERSION, STAKE_SEED},
     error::TrustStakeError,
     events::PermitIncreased,
     state::{SellerStake, SlashPermit},
@@ -23,6 +23,7 @@ pub struct IncreasePermitAccountConstraints<'info> {
         mut,
         seeds = [STAKE_SEED, SEED_VERSION, seller.key().as_ref()],
         bump = stake.bump,
+        constraint = stake.version == ACCOUNT_VERSION @ TrustStakeError::AccountVersionMismatch,
     )]
     pub stake: Account<'info, SellerStake>,
 
@@ -31,6 +32,7 @@ pub struct IncreasePermitAccountConstraints<'info> {
         seeds = [PERMIT_SEED, SEED_VERSION, permit.seller.as_ref(), permit.marketplace.as_ref()],
         bump = permit.bump,
         has_one = seller,
+        constraint = permit.version == ACCOUNT_VERSION @ TrustStakeError::AccountVersionMismatch,
     )]
     pub permit: Account<'info, SlashPermit>,
 }

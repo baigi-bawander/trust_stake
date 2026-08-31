@@ -1,7 +1,7 @@
 use anchor_lang::prelude::*;
 
 use crate::{
-    constants::{DISPUTE_SEED, SEED_VERSION},
+    constants::{ACCOUNT_VERSION, DISPUTE_SEED, SEED_VERSION},
     error::TrustStakeError,
     events::DisputeClosed,
     state::{DisputeRecord, DisputeStatus},
@@ -30,6 +30,7 @@ pub struct CloseDisputeAccountConstraints<'info> {
         seeds = [DISPUTE_SEED, SEED_VERSION, dispute.marketplace.as_ref(), dispute.seller.as_ref(), dispute.order_id.as_ref()],
         bump = dispute.bump,
         has_one = buyer,
+        constraint = dispute.version == ACCOUNT_VERSION @ TrustStakeError::AccountVersionMismatch,
         close = buyer,
     )]
     pub dispute: Box<Account<'info, DisputeRecord>>,
@@ -41,9 +42,10 @@ pub struct CloseDisputeAccountConstraints<'info> {
 /// Both conditions matter. The record is the replay guard, so it may only
 /// go once the receipt behind it would fail `raise_dispute`'s window
 /// check anyway, which is what `closable_after` (the receipt's
-/// `issued_at` plus the permit's complaint window) marks. And a still-open
-/// complaint may never be deleted: closing one would erase the freeze on
-/// the permit and the money owed with it.
+/// `issued_at` plus the larger of the permit's complaint window and the
+/// protocol maximum, per `raise_dispute`'s handler doc comment) marks.
+/// And a still-open complaint may never be deleted: closing one would
+/// erase the freeze on the permit and the money owed with it.
 ///
 /// The permanent record lives in the marketplace's and the seller's
 /// counters and in the event log, neither of which this touches.

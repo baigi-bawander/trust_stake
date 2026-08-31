@@ -613,6 +613,20 @@ impl World {
     // ---- instruction handlers ----
 
     pub fn initialize_config(&mut self, admin: &Keypair, chain_id: u8) -> TransactionResult {
+        let mint = self.mint;
+        self.initialize_config_with_mint(admin, chain_id, mint)
+    }
+
+    /// Lower-level variant taking the mint to pin explicitly, for the
+    /// tests that exercise which mints `initialize_config` will accept as
+    /// the protocol's collateral. Every other caller wants
+    /// `initialize_config`, which pins the harness's own mint.
+    pub fn initialize_config_with_mint(
+        &mut self,
+        admin: &Keypair,
+        chain_id: u8,
+        mint: Pubkey,
+    ) -> TransactionResult {
         let config = self.config_pda();
         let (event_authority, program) = event_cpi_accounts(&self.program_id);
 
@@ -622,7 +636,7 @@ impl World {
             truststake::accounts::InitializeConfigAccountConstraints {
                 admin: admin.pubkey(),
                 config,
-                mint: self.mint,
+                mint,
                 system_program: anchor_lang::system_program::ID,
                 event_authority,
                 program,

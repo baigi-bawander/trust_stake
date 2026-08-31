@@ -22,6 +22,7 @@ pub struct RegisterMarketplaceAccountConstraints<'info> {
     #[account(
         seeds = [CONFIG_SEED, SEED_VERSION],
         bump = config.bump,
+        constraint = config.version == ACCOUNT_VERSION @ TrustStakeError::AccountVersionMismatch,
     )]
     pub config: Account<'info, Config>,
 

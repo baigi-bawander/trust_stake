@@ -2,7 +2,7 @@ use anchor_lang::prelude::*;
 use anchor_spl::token_interface::{transfer_checked, Mint, TokenAccount, TokenInterface, TransferChecked};
 
 use crate::{
-    constants::{SEED_VERSION, STAKE_SEED, VAULT_SEED},
+    constants::{ACCOUNT_VERSION, SEED_VERSION, STAKE_SEED, VAULT_SEED},
     error::TrustStakeError,
     events::StakeAdded,
     state::SellerStake,
@@ -21,6 +21,7 @@ pub struct AddStakeAccountConstraints<'info> {
         mut,
         seeds = [STAKE_SEED, SEED_VERSION, seller.key().as_ref()],
         bump = stake.bump,
+        constraint = stake.version == ACCOUNT_VERSION @ TrustStakeError::AccountVersionMismatch,
     )]
     pub stake: Account<'info, SellerStake>,
 

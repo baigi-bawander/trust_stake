@@ -1,7 +1,7 @@
 use anchor_lang::prelude::*;
 
 use crate::{
-    constants::{PERMIT_SEED, SEED_VERSION},
+    constants::{ACCOUNT_VERSION, PERMIT_SEED, SEED_VERSION},
     error::TrustStakeError,
     events::PermitRevoked,
     state::SlashPermit,
@@ -20,6 +20,7 @@ pub struct RevokePermitAccountConstraints<'info> {
         seeds = [PERMIT_SEED, SEED_VERSION, permit.seller.as_ref(), permit.marketplace.as_ref()],
         bump = permit.bump,
         has_one = seller,
+        constraint = permit.version == ACCOUNT_VERSION @ TrustStakeError::AccountVersionMismatch,
     )]
     pub permit: Account<'info, SlashPermit>,
 }

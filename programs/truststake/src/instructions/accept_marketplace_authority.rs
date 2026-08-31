@@ -1,7 +1,8 @@
 use anchor_lang::prelude::*;
 
 use crate::{
-    constants::{MARKETPLACE_SEED, SEED_VERSION},
+    constants::{ACCOUNT_VERSION, MARKETPLACE_SEED, SEED_VERSION},
+    error::TrustStakeError,
     events::MarketplaceAuthorityAccepted,
     state::Marketplace,
 };
@@ -20,6 +21,7 @@ pub struct AcceptMarketplaceAuthorityAccountConstraints<'info> {
         seeds = [MARKETPLACE_SEED, SEED_VERSION, marketplace.marketplace_id.as_ref()],
         bump = marketplace.bump,
         has_one = pending_authority,
+        constraint = marketplace.version == ACCOUNT_VERSION @ TrustStakeError::AccountVersionMismatch,
     )]
     pub marketplace: Account<'info, Marketplace>,
 }

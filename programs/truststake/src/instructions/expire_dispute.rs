@@ -2,7 +2,7 @@ use anchor_lang::prelude::*;
 use anchor_spl::token_interface::{transfer_checked, Mint, TokenAccount, TokenInterface, TransferChecked};
 
 use crate::{
-    constants::{BOND_VAULT_SEED, DISPUTE_SEED, MARKETPLACE_SEED, PERMIT_SEED, SEED_VERSION},
+    constants::{ACCOUNT_VERSION, BOND_VAULT_SEED, DISPUTE_SEED, MARKETPLACE_SEED, PERMIT_SEED, SEED_VERSION},
     error::TrustStakeError,
     events::DisputeExpired,
     state::{DisputeRecord, DisputeStatus, Marketplace, SlashPermit},
@@ -22,6 +22,7 @@ pub struct ExpireDisputeAccountConstraints<'info> {
         mut,
         seeds = [MARKETPLACE_SEED, SEED_VERSION, marketplace.marketplace_id.as_ref()],
         bump = marketplace.bump,
+        constraint = marketplace.version == ACCOUNT_VERSION @ TrustStakeError::AccountVersionMismatch,
     )]
     pub marketplace: Box<Account<'info, Marketplace>>,
 
@@ -30,6 +31,7 @@ pub struct ExpireDisputeAccountConstraints<'info> {
         seeds = [DISPUTE_SEED, SEED_VERSION, dispute.marketplace.as_ref(), dispute.seller.as_ref(), dispute.order_id.as_ref()],
         bump = dispute.bump,
         has_one = marketplace,
+        constraint = dispute.version == ACCOUNT_VERSION @ TrustStakeError::AccountVersionMismatch,
     )]
     pub dispute: Box<Account<'info, DisputeRecord>>,
 
@@ -37,6 +39,7 @@ pub struct ExpireDisputeAccountConstraints<'info> {
         mut,
         seeds = [PERMIT_SEED, SEED_VERSION, dispute.seller.as_ref(), dispute.marketplace.as_ref()],
         bump = permit.bump,
+        constraint = permit.version == ACCOUNT_VERSION @ TrustStakeError::AccountVersionMismatch,
     )]
     pub permit: Box<Account<'info, SlashPermit>>,
 

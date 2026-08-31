@@ -14,8 +14,12 @@ use solana_keypair::Keypair;
 use solana_signer::Signer;
 use solana_system_interface::error::SystemError;
 use truststake::{
-    constants::{CLOCK_SKEW_TOLERANCE_SECONDS, MAX_BOND_BPS, MAX_COMPLAINT_WINDOW_SECONDS, MIN_COMPLAINT_WINDOW_SECONDS},
+    constants::{
+        ACCOUNT_VERSION, CLOCK_SKEW_TOLERANCE_SECONDS, MAX_BOND_BPS, MAX_COMPLAINT_WINDOW_SECONDS,
+        MIN_COMPLAINT_WINDOW_SECONDS,
+    },
     error::TrustStakeError,
+    state::SlashPermit,
 };
 
 const SOL: u64 = 1_000_000_000;
@@ -479,6 +483,37 @@ fn test_revoke_permit_rejects_double_revoke() {
 
     let result = world.revoke_permit(&seller, marketplace);
     assert_error_code(&result, u32::from(TrustStakeError::PermitAlreadyRevoked));
+}
+
+#[test]
+fn test_revoke_permit_rejects_wrong_account_version() {
+    // Stand in for a SlashPermit written by a future layout: nothing in
+    // the current instruction set can produce a stored version other than
+    // ACCOUNT_VERSION, so write one directly into account state via the
+    // harness, the same way test_phase1.rs's
+    // test_update_marketplace_grandfathers_stored_settings stands in for
+    // an out-of-bounds bond_bps.
+    let mut world = setup_world();
+    let (seller, _token_account) = setup_staked_seller(&mut world, usdc(300), 0);
+    let (_authority, marketplace) = setup_marketplace(&mut world, 92, MIN_COMPLAINT_WINDOW_SECONDS, DEFAULT_BOND_BPS);
+    world.grant_permit(&seller, marketplace, usdc(150)).unwrap();
+
+    let permit_pubkey = world.permit_pda(&seller.pubkey(), &marketplace);
+    let mut account = world.svm.get_account(&permit_pubkey).expect("permit exists");
+    let mut state = SlashPermit::try_deserialize(&mut account.data.as_slice()).expect("valid SlashPermit data");
+    state.version = ACCOUNT_VERSION + 1;
+    let mut data = Vec::new();
+    state
+        .try_serialize(&mut data)
+        .expect("serialize the forced-mismatched permit state");
+    account.data = data;
+    world
+        .svm
+        .set_account(permit_pubkey, account)
+        .expect("force a wrong account version");
+
+    let result = world.revoke_permit(&seller, marketplace);
+    assert_error_code(&result, u32::from(TrustStakeError::AccountVersionMismatch));
 }
 
 #[test]

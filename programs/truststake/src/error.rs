@@ -5,8 +5,11 @@ use anchor_lang::prelude::*;
 /// renumbers every variant after it, which silently invalidates any client or
 /// explorer still holding an older IDL: the same failure the account model's
 /// append-only rule exists for, reached through the IDL rather than through
-/// Borsh. Tests are immune because they compare `u32::from(TrustStakeError::X)`
-/// rather than a literal, so nothing in this repo catches a bad insertion.
+/// Borsh. Every other test in this crate compares `u32::from(TrustStakeError::X)`
+/// rather than a literal, so on its own a bad insertion would renumber
+/// everything after it with nothing here noticing; `error_numbering_is_pinned`
+/// below is the one test that checks the literals themselves and catches
+/// exactly that.
 #[error_code]
 pub enum TrustStakeError {
     #[msg("Only the compiled-in initial admin may call this")]
@@ -85,4 +88,37 @@ pub enum TrustStakeError {
     DisputeExpired,
     #[msg("chain_id must be the devnet or mainnet tag")]
     InvalidChainId,
+    #[msg("Account was written by a different program version")]
+    AccountVersionMismatch,
+    #[msg("Collateral mint carries a token extension the protocol does not support")]
+    UnsupportedMintExtension,
+}
+
+/// A failure here means the numbering shifted: some variant was inserted
+/// ahead of one pinned below rather than appended at the end. That is not
+/// a test to fix by updating these literals -- any client holding the
+/// already-published IDL will mis-name every error from the insertion
+/// point on, since Anchor numbers variants positionally and bakes that
+/// numbering into the IDL at generation time. The fix is to move the new
+/// variant to the end of the enum instead.
+#[cfg(test)]
+mod error_numbering_is_pinned {
+    use super::*;
+
+    #[test]
+    fn variant_codes_are_pinned() {
+        // First variant.
+        assert_eq!(u32::from(TrustStakeError::NotInitialAdmin), 6000);
+        // Two from the middle.
+        assert_eq!(u32::from(TrustStakeError::MissingEd25519Instruction), 6015);
+        assert_eq!(u32::from(TrustStakeError::ClaimExceedsReceipt), 6030);
+        assert_eq!(u32::from(TrustStakeError::AccountVersionMismatch), 6038);
+        // Last variant. This assertion is the one that has to move when a
+        // variant is appended: the others keep their numbers no matter
+        // what is added after them, so on their own they would go on
+        // passing while no longer pinning the end of the enum, which is
+        // the position an insertion actually shifts. Pin the new last
+        // variant here and leave every assertion above it in place.
+        assert_eq!(u32::from(TrustStakeError::UnsupportedMintExtension), 6039);
+    }
 }

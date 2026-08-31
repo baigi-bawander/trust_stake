@@ -4,8 +4,8 @@ use anchor_spl::token_interface::{transfer_checked, Mint, TokenAccount, TokenInt
 use crate::{
     constants::{
         ACCOUNT_VERSION, BOND_VAULT_SEED, BPS_DENOMINATOR, CLOCK_SKEW_TOLERANCE_SECONDS, CONFIG_SEED,
-        DISPUTE_EXPIRY_SECONDS, DISPUTE_SEED, MARKETPLACE_SEED, MAX_COMPLAINT_WINDOW_SECONDS, PERMIT_SEED,
-        RECEIPT_DOMAIN, SEED_VERSION, STAKE_SEED,
+        DISPUTE_EXPIRY_SECONDS, DISPUTE_SEED, MARKETPLACE_SEED, MAX_BOND_BPS, MAX_COMPLAINT_WINDOW_SECONDS,
+        PERMIT_SEED, RECEIPT_DOMAIN, SEED_VERSION, STAKE_SEED,
     },
     ed25519::{verify_signed_receipt, SignedReceipt},
     error::TrustStakeError,
@@ -35,6 +35,7 @@ pub struct RaiseDisputeAccountConstraints<'info> {
     #[account(
         seeds = [CONFIG_SEED, SEED_VERSION],
         bump = config.bump,
+        constraint = config.version == ACCOUNT_VERSION @ TrustStakeError::AccountVersionMismatch,
     )]
     pub config: Box<Account<'info, Config>>,
 
@@ -42,6 +43,7 @@ pub struct RaiseDisputeAccountConstraints<'info> {
         mut,
         seeds = [MARKETPLACE_SEED, SEED_VERSION, marketplace.marketplace_id.as_ref()],
         bump = marketplace.bump,
+        constraint = marketplace.version == ACCOUNT_VERSION @ TrustStakeError::AccountVersionMismatch,
     )]
     pub marketplace: Box<Account<'info, Marketplace>>,
 
@@ -49,6 +51,7 @@ pub struct RaiseDisputeAccountConstraints<'info> {
         mut,
         seeds = [STAKE_SEED, SEED_VERSION, stake.seller.as_ref()],
         bump = stake.bump,
+        constraint = stake.version == ACCOUNT_VERSION @ TrustStakeError::AccountVersionMismatch,
     )]
     pub stake: Box<Account<'info, SellerStake>>,
 
@@ -56,6 +59,7 @@ pub struct RaiseDisputeAccountConstraints<'info> {
         mut,
         seeds = [PERMIT_SEED, SEED_VERSION, stake.seller.as_ref(), marketplace.key().as_ref()],
         bump = permit.bump,
+        constraint = permit.version == ACCOUNT_VERSION @ TrustStakeError::AccountVersionMismatch,
     )]
     pub permit: Box<Account<'info, SlashPermit>>,
 
@@ -114,17 +118,21 @@ pub struct RaiseDisputeAccountConstraints<'info> {
 /// other.
 ///
 /// `closable_after` is stored as `receipt.issued_at +
-/// MAX_COMPLAINT_WINDOW_SECONDS`, never the live permit's own (possibly
-/// shorter) window: a permit PDA carries no nonce, so a seller can
-/// revoke, wait out the window, release, and re-grant at the same
-/// address under a marketplace that has since raised its complaint
+/// max(permit.complaint_window, MAX_COMPLAINT_WINDOW_SECONDS)`, never the
+/// live permit's own window alone: a permit PDA carries no nonce, so a
+/// seller can revoke, wait out the window, release, and re-grant at the
+/// same address under a marketplace that has since raised its complaint
 /// window. A `closable_after` frozen from the window in effect at filing
 /// time would let that re-grant outlive the record that blocks this same
-/// receipt from being replayed. Every permit's window is bounded to
-/// `MAX_COMPLAINT_WINDOW_SECONDS` at grant time, so that constant is a
-/// true upper bound for any permit that could ever occupy the PDA -- the
-/// accepted cost is that a buyer's rent refund can wait up to 30 days
-/// even on a marketplace with a 2-day window.
+/// receipt from being replayed. `grant_permit` copies `complaint_window`
+/// from the marketplace with no re-validation against today's constant
+/// (docs/DESIGN-v2.md), so a marketplace grandfathered from a release
+/// with a higher ceiling can still be granting permits whose stored
+/// window exceeds `MAX_COMPLAINT_WINDOW_SECONDS` -- the constant alone is
+/// not a true upper bound for every permit that could occupy the PDA, so
+/// the bound is taken as the larger of the two. The accepted cost is
+/// that a buyer's rent refund can wait up to 30 days even on a
+/// marketplace with a 2-day window.
 pub fn handler(ctx: Context<RaiseDisputeAccountConstraints>, order_id: [u8; 32], claim: u64) -> Result<()> {
     let SignedReceipt { signer, receipt } =
         verify_signed_receipt(&ctx.accounts.instructions_sysvar.to_account_info())?;
@@ -228,14 +236,29 @@ pub fn handler(ctx: Context<RaiseDisputeAccountConstraints>, order_id: [u8; 32],
     require!(claim > 0, TrustStakeError::ZeroAmount);
     require!(claim <= receipt.amount, TrustStakeError::ClaimExceedsReceipt);
 
-    let bond = bond_for(claim, permit.bond_bps)?;
+    // `grant_permit` copies `bond_bps` from the marketplace without
+    // re-checking it against `MAX_BOND_BPS`, on purpose: a marketplace
+    // grandfathered from a release with a higher ceiling must not be
+    // locked out of granting permits at all the day the constant drops
+    // (docs/DESIGN-v2.md, and `update_marketplace`'s doc comment). So the
+    // ceiling is applied here, where the buyer is actually charged.
+    //
+    // This clamps down where `closable_after` below clamps up, which is
+    // not an inconsistency: each takes the direction that protects the
+    // party who cannot defend themselves. A buyer must never be made to
+    // post more than today's ceiling permits, so the bond takes the
+    // smaller rate; a replay guard must outlive every filing window that
+    // could apply to it, so `closable_after` takes the longer window.
+    let bond = bond_for(claim, permit.bond_bps.min(MAX_BOND_BPS))?;
 
     // The stored replay guard's expiry, unlike `window_closes_at` above:
-    // see the handler doc comment for why this must be the protocol-wide
-    // maximum rather than this permit's own window.
+    // see the handler doc comment for why this must be an upper bound
+    // over every permit that could ever occupy this PDA -- the larger of
+    // this permit's own window and the protocol maximum -- rather than
+    // either alone.
     let closable_after = receipt
         .issued_at
-        .checked_add(MAX_COMPLAINT_WINDOW_SECONDS)
+        .checked_add(permit.complaint_window.max(MAX_COMPLAINT_WINDOW_SECONDS))
         .ok_or(TrustStakeError::MathOverflow)?;
 
     // 9 and 10. The record is created, then the counters, then the bond
@@ -331,7 +354,6 @@ fn bond_for(claim: u64, bond_bps: u16) -> Result<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::constants::MAX_BOND_BPS;
 
     #[test]
     fn bond_rounds_up() {
@@ -342,8 +364,13 @@ mod tests {
         assert_eq!(bond_for(19, 1_000).unwrap(), 2);
         // An exact multiple is not rounded up past itself.
         assert_eq!(bond_for(10_000_000, 1_000).unwrap(), 1_000_000);
-        // Zero basis points is the only way to a zero bond, and no
-        // marketplace can be registered above the ceiling.
+        // Zero basis points is the only way to a zero bond. The ceiling
+        // binds a marketplace at registration only: `grant_permit` copies
+        // whatever rate is stored without re-checking it, so a permit can
+        // outlive a drop in `MAX_BOND_BPS` still carrying the old rate,
+        // which is why the handler clamps rather than trusting the stored
+        // value. `bond_for` itself is given whatever rate it is asked
+        // for, so both ends of the range are exercised here.
         assert_eq!(bond_for(80_000_000, 0).unwrap(), 0);
         assert_eq!(bond_for(80_000_000, MAX_BOND_BPS).unwrap(), 16_000_000);
     }

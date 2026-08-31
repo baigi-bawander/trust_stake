@@ -23,12 +23,14 @@ pub struct GrantPermitAccountConstraints<'info> {
         mut,
         seeds = [STAKE_SEED, SEED_VERSION, seller.key().as_ref()],
         bump = stake.bump,
+        constraint = stake.version == ACCOUNT_VERSION @ TrustStakeError::AccountVersionMismatch,
     )]
     pub stake: Account<'info, SellerStake>,
 
     #[account(
         seeds = [MARKETPLACE_SEED, SEED_VERSION, marketplace.marketplace_id.as_ref()],
         bump = marketplace.bump,
+        constraint = marketplace.version == ACCOUNT_VERSION @ TrustStakeError::AccountVersionMismatch,
     )]
     pub marketplace: Account<'info, Marketplace>,
 
