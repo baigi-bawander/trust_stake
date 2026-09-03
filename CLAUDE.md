@@ -57,7 +57,10 @@ a production migration.
 OpenSSL build fails on a clock-skew check. LiteSVM loads the pre-built
 `target/deploy/truststake.so` rather than the native test binary, so any handler change needs
 `anchor build` before the tests reflect it. A `build.rs` guard fails the compile if that
-`.so` is stale. Current state is 152 tests, all passing.
+`.so` is stale. Current state is 152 tests, all passing. A separate suite,
+`OPENSSL_NO_VENDOR=1 cargo test --example devnet_demo --features devnet_demo` from the same
+directory, unit-tests the demo script's own idempotency-guard decisions (28 tests) — see the
+"Real devnet demo" entry below.
 
 ### Deliberate tradeoffs on v2, not bugs
 
@@ -201,6 +204,13 @@ See `docs/DESIGN-v2.md`, "What this design deliberately does not do" and "Honest
   disputes the moment this task's stage design required running it more than once.
   `tests/test_devnet_demo_parity.rs` proves the entire four-stage sequence against LiteSVM first
   — including the boundary of every wait, both directions — before any of it spends devnet SOL.
+  Parity coverage never exercises a guard, though — it replays the instruction sequence, not the
+  script's own decision code — so every guard that decides "has this step already run" was, until
+  the fix recorded in `docs/DEMO-SCRIPT-FINDINGS.md`, untested and prone to the same species of
+  bug the program itself had already fixed in `SlashPermit.granted_at`: inferring "already done"
+  from live chain state that a *later* step of the same script can destroy or decrease. Those
+  guard decisions are now pure functions with their own `#[cfg(test)] mod tests` inside
+  `devnet_demo.rs`, run via the command in "Build and test" above.
 - **Build:** `anchor build` (not plain `cargo build` — Solana programs need the SBF target, which `anchor build` invokes via `cargo build-sbf`). `target/deploy/truststake-keypair.json`
   (pubkey `G8B59KZpf7siepeb3PRX3KuPk4LC1LZarF8YmuPHGUZ`, confirmed with `solana-keygen pubkey`)
   does not match `declare_id!` in `src/lib.rs` or either `[programs.*]` entry in `Anchor.toml`

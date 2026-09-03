@@ -365,6 +365,182 @@ fn dispute_pda(program_id: Pubkey, marketplace: Pubkey, seller: Pubkey, order_id
     .0
 }
 
+// ==================== Guard decisions (pure functions) ====================
+//
+// Every guard below that decides "have I already done this?" makes that
+// decision here first -- no RpcClient, no I/O -- so `#[cfg(test)] mod
+// tests` at the bottom of this file can exercise every branch directly,
+// including the ones a resumed run only reaches after an earlier step has
+// destroyed or changed the very state a naive existence check would have
+// relied on. See docs/DEMO-SCRIPT-FINDINGS.md for the defects these close.
+
+/// Whether to grant a permit at a PDA this script might have granted
+/// before. `lifecycle_done` is checked BEFORE existence: once a permit's
+/// full cycle (grant, revoke, release) has actually completed, this
+/// returns `SkipLifecycleDone` even though the account no longer exists on
+/// chain. An existence-only check (D1's bug) cannot tell "never granted"
+/// apart from "granted, then released by a later stage of this same
+/// script" and re-grants into the second case.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PermitGrantDecision {
+    Grant,
+    SkipLifecycleDone,
+    SkipAlreadyGranted,
+}
+
+fn decide_permit_grant(lifecycle_done: bool, permit_exists: bool) -> PermitGrantDecision {
+    if lifecycle_done {
+        PermitGrantDecision::SkipLifecycleDone
+    } else if permit_exists {
+        PermitGrantDecision::SkipAlreadyGranted
+    } else {
+        PermitGrantDecision::Grant
+    }
+}
+
+/// Whether to call `revoke_permit` on a permit this run's grant step just
+/// confirmed exists. `SkipStaleCache` is the ensure_revoked-staleness fix:
+/// a cached `revoked_at` from a permit's PRIOR era at this same PDA must
+/// never be handed out as if it described the CURRENT, still-unrevoked
+/// permit -- and revoking on that era's behalf isn't this run's call
+/// either (item 8: a permit this run did not grant isn't this run's to
+/// act on).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PermitRevokeDecision {
+    Revoke,
+    UseLiveRevokedAt(i64),
+    SkipLifecycleDone,
+    SkipStaleCache,
+}
+
+fn decide_permit_revoke(lifecycle_done: bool, live_revoked_at: Option<i64>, cached_revoked_at: Option<i64>) -> PermitRevokeDecision {
+    if lifecycle_done {
+        return PermitRevokeDecision::SkipLifecycleDone;
+    }
+    match live_revoked_at {
+        Some(revoked_at) => PermitRevokeDecision::UseLiveRevokedAt(revoked_at),
+        None if cached_revoked_at.is_some() => PermitRevokeDecision::SkipStaleCache,
+        None => PermitRevokeDecision::Revoke,
+    }
+}
+
+/// Whether to call `release_permit`/`release_permit_early` on a permit
+/// stage 1 already granted and (usually) revoked. `permit_exists` alone is
+/// exactly the D1-mirror bug: it cannot distinguish "released, done" from
+/// "never granted." `SkipUnrevoked` is what keeps this guard from ever
+/// calling release on a permit that ISN'T revoked -- true both mid-flow
+/// (revoke hasn't run yet this invocation) and for the stray shape item 8
+/// describes (a previous bug re-granted at this PDA after release; this
+/// permit's current era isn't this guard's to finish).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PermitReleaseDecision {
+    Proceed { revoked_at: i64 },
+    NotYetDue { remaining_seconds: i64 },
+    SkipLifecycleDone,
+    SkipAlreadyReleased,
+    SkipUnrevoked,
+    NotYetReachable,
+}
+
+fn decide_permit_release(
+    lifecycle_done: bool,
+    permit_exists: bool,
+    live_revoked_at: Option<i64>,
+    cached_revoked_at: Option<i64>,
+    wait_seconds: i64,
+    now: i64,
+) -> PermitReleaseDecision {
+    if lifecycle_done {
+        return PermitReleaseDecision::SkipLifecycleDone;
+    }
+    if !permit_exists {
+        return if cached_revoked_at.is_some() {
+            PermitReleaseDecision::SkipAlreadyReleased
+        } else {
+            PermitReleaseDecision::NotYetReachable
+        };
+    }
+    let Some(revoked_at) = live_revoked_at else {
+        return PermitReleaseDecision::SkipUnrevoked;
+    };
+    let due_at = revoked_at + wait_seconds;
+    if now < due_at {
+        PermitReleaseDecision::NotYetDue { remaining_seconds: due_at - now }
+    } else {
+        PermitReleaseDecision::Proceed { revoked_at }
+    }
+}
+
+/// Whether Step 1.6 still needs to top up the original seller's free
+/// collateral before SwiftMarket's permit is granted. D3's bug was
+/// re-evaluating "free >= target" on every run, including runs where
+/// 1.7/1.8 already committed against that free balance -- the target only
+/// ever meant "before the grant." Once the permit exists, this step's job
+/// is done regardless of what free collateral looks like now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TopUpDecision {
+    TopUp { shortfall: u64 },
+    SkipPermitAlreadyGranted,
+    SkipAlreadyAtTarget,
+}
+
+fn decide_free_collateral_topup(swiftmarket_permit_exists: bool, free: u64, target: u64) -> TopUpDecision {
+    if swiftmarket_permit_exists {
+        TopUpDecision::SkipPermitAlreadyGranted
+    } else if free >= target {
+        TopUpDecision::SkipAlreadyAtTarget
+    } else {
+        TopUpDecision::TopUp { shortfall: target - free }
+    }
+}
+
+/// Whether Step 7's one-time CashDesk dispute still needs raising.
+/// `cashdesk_permit_slashed` is read from the SlashPermit account, which
+/// stage 4 never closes (only DisputeRecord accounts are closable) -- so
+/// unlike a scan for an Upheld DisputeRecord, this signal survives stage
+/// 4.2 forever, and it is already correct the very first time this flag is
+/// consulted, even against a dispute raised before this flag existed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Step7DisputeDecision {
+    Proceed,
+    SkipFlagSet,
+    SkipAlreadySlashed,
+}
+
+fn decide_step7_dispute(step7_done_flag: bool, cashdesk_permit_slashed: u64, claim_amount: u64) -> Step7DisputeDecision {
+    if step7_done_flag {
+        Step7DisputeDecision::SkipFlagSet
+    } else if cashdesk_permit_slashed >= claim_amount {
+        Step7DisputeDecision::SkipAlreadySlashed
+    } else {
+        Step7DisputeDecision::Proceed
+    }
+}
+
+/// Whether stage 1.10's second CashDesk dispute still needs resolving.
+/// `dispute_status` is `None` when the DisputeRecord no longer exists --
+/// stage 4.2 closes exactly this record, and `close_dispute` only ever
+/// succeeds on a non-Open dispute (`try_close_dispute` checks that itself),
+/// so "gone" always implies "was resolved," never "still open."
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SecondDisputeResolveDecision {
+    Proceed,
+    SkipFlagSet,
+    SkipDisputeGone,
+    SkipAlreadyResolved,
+}
+
+fn decide_second_dispute_resolve(resolved_flag: bool, dispute_status: Option<u8>) -> SecondDisputeResolveDecision {
+    if resolved_flag {
+        return SecondDisputeResolveDecision::SkipFlagSet;
+    }
+    match dispute_status {
+        None => SecondDisputeResolveDecision::SkipDisputeGone,
+        Some(status) if status != DisputeStatus::Open as u8 => SecondDisputeResolveDecision::SkipAlreadyResolved,
+        Some(_) => SecondDisputeResolveDecision::Proceed,
+    }
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     let keypair_path = env::var("TRUSTSTAKE_ADMIN_KEYPAIR").unwrap_or_else(|_| {
         format!(
@@ -580,8 +756,8 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // ==================== Step 5: grant a permit to each marketplace ====================
     println!("=== Step 5: seller grants each marketplace its own permit, from the SAME stake ===");
-    ensure_permit(&chain, &seller, stake, cashdesk, CASHDESK_PERMIT, "CashDesk")?;
-    ensure_permit(&chain, &seller, stake, pixelbazaar, PIXELBAZAAR_PERMIT, "PixelBazaar")?;
+    ensure_permit(&chain, &progress, "seller_cashdesk_permit_lifecycle_done", &seller, stake, cashdesk, CASHDESK_PERMIT, "CashDesk")?;
+    ensure_permit(&chain, &progress, "seller_pixelbazaar_permit_lifecycle_done", &seller, stake, pixelbazaar, PIXELBAZAAR_PERMIT, "PixelBazaar")?;
 
     let cashdesk_permit_addr = permit_pda(program_id, seller.pubkey(), cashdesk);
     let pixelbazaar_permit_addr = permit_pda(program_id, seller.pubkey(), pixelbazaar);
@@ -721,96 +897,115 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // ==================== Step 7: a buyer disputes an order on CashDesk ====================
     println!("=== Step 7: a CashDesk buyer disputes a {} order (one-time demo) ===", format_usdc(ORDER_AMOUNT));
-    let original_dispute =
-        find_dispute_by_marketplace_seller_status(&chain, cashdesk, seller.pubkey(), DisputeStatus::Upheld)?;
-    if original_dispute.is_none() {
-        let order_id = Keypair::new().pubkey().to_bytes();
-        let issued_at = now_unix();
-        let receipt = OrderReceipt {
-            domain: RECEIPT_DOMAIN,
-            program_id,
-            chain_id: DEVNET_CHAIN_ID,
-            marketplace_id: cashdesk_id,
-            seller: seller.pubkey(),
-            buyer: buyer.pubkey(),
-            order_id,
-            amount: ORDER_AMOUNT,
-            issued_at,
-            expires_at: issued_at + 7 * SECONDS_PER_DAY,
-        };
-        // Build the signed bytes with OrderReceipt::message(), never by
-        // hand: the Ed25519 header below asserts message_data_size
-        // EXACTLY, and every field of OrderReceipt is fixed-width for that
-        // reason (src/receipt.rs).
-        let message = receipt.message();
-        let signature_bytes: [u8; 64] = cashdesk_receipt_signer.sign_message(&message).into();
-        let verify_instruction = new_ed25519_instruction_with_signature(
-            &message,
-            &signature_bytes,
-            &cashdesk_receipt_signer.pubkey().to_bytes(),
-        );
-
-        let cashdesk_permit = permit_pda(program_id, seller.pubkey(), cashdesk);
-        let dispute = dispute_pda(program_id, cashdesk, seller.pubkey(), order_id);
-        let cashdesk_bond_vault = bond_vault_pda(program_id, cashdesk);
-        let raise_dispute_instruction = Instruction::new_with_bytes(
-            program_id,
-            &truststake::instruction::RaiseDispute { order_id, claim: CLAIM_AMOUNT }.data(),
-            truststake::accounts::RaiseDisputeAccountConstraints {
+    let cashdesk_permit_addr = permit_pda(program_id, seller.pubkey(), cashdesk);
+    let cashdesk_permit_before_step7 = read_permit(&client, &cashdesk_permit_addr)?;
+    let step7_done_flag = get_bool(&progress, "step7_cashdesk_dispute_done");
+    match decide_step7_dispute(step7_done_flag, cashdesk_permit_before_step7.slashed, CLAIM_AMOUNT) {
+        Step7DisputeDecision::SkipFlagSet => {
+            println!("Already demonstrated in a previous run, skipping.");
+        }
+        Step7DisputeDecision::SkipAlreadySlashed => {
+            // Migration path: this flag postdates the 2026-08-24 run that
+            // actually raised and upheld this claim. `slashed` on the
+            // SlashPermit account is never reset by anything later in this
+            // script (unlike the DisputeRecord stage 4.2 eventually closes),
+            // so it proves the claim already landed even with the flag unset.
+            println!(
+                "Already demonstrated (CashDesk's permit already shows {} slashed, from before this flag existed), skipping.",
+                format_usdc(cashdesk_permit_before_step7.slashed)
+            );
+            set_bool(&mut progress, "step7_cashdesk_dispute_done", true);
+            save_progress(&progress)?;
+        }
+        Step7DisputeDecision::Proceed => {
+            let order_id = Keypair::new().pubkey().to_bytes();
+            let issued_at = now_unix();
+            let receipt = OrderReceipt {
+                domain: RECEIPT_DOMAIN,
+                program_id,
+                chain_id: DEVNET_CHAIN_ID,
+                marketplace_id: cashdesk_id,
+                seller: seller.pubkey(),
                 buyer: buyer.pubkey(),
-                config,
-                marketplace: cashdesk,
-                stake,
-                permit: cashdesk_permit,
-                dispute,
-                bond_vault: cashdesk_bond_vault,
-                mint,
-                buyer_token_account,
-                instructions_sysvar: solana_instructions_sysvar::ID,
-                token_program: spl_token::ID,
-                system_program: anchor_lang::system_program::ID,
-                event_authority,
-                program: program_id,
-            }
-            .to_account_metas(None),
-        );
-        // The Ed25519 verify instruction MUST sit immediately before
-        // raise_dispute in the same transaction: raise_dispute derives its
-        // position as current_index - 1 (docs/DESIGN-v2.md, "raise_dispute,
-        // the one with real complexity", check 1). They cannot be split
-        // across two transactions.
-        let signature = send(&client, &[verify_instruction, raise_dispute_instruction], &buyer.pubkey(), &[&buyer])?;
-        print_step("[Ed25519 verify, raise_dispute]", &signature);
+                order_id,
+                amount: ORDER_AMOUNT,
+                issued_at,
+                expires_at: issued_at + 7 * SECONDS_PER_DAY,
+            };
+            // Build the signed bytes with OrderReceipt::message(), never by
+            // hand: the Ed25519 header below asserts message_data_size
+            // EXACTLY, and every field of OrderReceipt is fixed-width for that
+            // reason (src/receipt.rs).
+            let message = receipt.message();
+            let signature_bytes: [u8; 64] = cashdesk_receipt_signer.sign_message(&message).into();
+            let verify_instruction = new_ed25519_instruction_with_signature(
+                &message,
+                &signature_bytes,
+                &cashdesk_receipt_signer.pubkey().to_bytes(),
+            );
 
-        // CashDesk's arbiter resolves upheld. admin is the fee payer;
-        // cashdesk_arbiter only co-signs, since resolve_dispute's `arbiter`
-        // account is never `mut` -- it authorizes the ruling and pays
-        // nothing, which is exactly the "trusted judge, not a funded
-        // participant" role decision 2 (docs/DESIGN-v2.md) describes.
-        let resolve_instruction = Instruction::new_with_bytes(
-            program_id,
-            &truststake::instruction::ResolveDispute { upheld: true }.data(),
-            truststake::accounts::ResolveDisputeAccountConstraints {
-                arbiter: cashdesk_arbiter.pubkey(),
-                marketplace: cashdesk,
-                dispute,
-                permit: cashdesk_permit,
-                stake,
-                stake_vault,
-                bond_vault: cashdesk_bond_vault,
-                mint,
-                buyer_token_account,
-                token_program: spl_token::ID,
-                event_authority,
-                program: program_id,
-            }
-            .to_account_metas(None),
-        );
-        let signature = send(&client, &[resolve_instruction], &admin.pubkey(), &[&admin, &cashdesk_arbiter])?;
-        print_step("resolve_dispute(upheld = true)", &signature);
-        println!("CashDesk upheld the claim; see the payout reflected in CashDesk's permit below.");
-    } else {
-        println!("Already demonstrated in a previous run (an Upheld dispute against CashDesk for this seller already exists), skipping.");
+            let cashdesk_permit = permit_pda(program_id, seller.pubkey(), cashdesk);
+            let dispute = dispute_pda(program_id, cashdesk, seller.pubkey(), order_id);
+            let cashdesk_bond_vault = bond_vault_pda(program_id, cashdesk);
+            let raise_dispute_instruction = Instruction::new_with_bytes(
+                program_id,
+                &truststake::instruction::RaiseDispute { order_id, claim: CLAIM_AMOUNT }.data(),
+                truststake::accounts::RaiseDisputeAccountConstraints {
+                    buyer: buyer.pubkey(),
+                    config,
+                    marketplace: cashdesk,
+                    stake,
+                    permit: cashdesk_permit,
+                    dispute,
+                    bond_vault: cashdesk_bond_vault,
+                    mint,
+                    buyer_token_account,
+                    instructions_sysvar: solana_instructions_sysvar::ID,
+                    token_program: spl_token::ID,
+                    system_program: anchor_lang::system_program::ID,
+                    event_authority,
+                    program: program_id,
+                }
+                .to_account_metas(None),
+            );
+            // The Ed25519 verify instruction MUST sit immediately before
+            // raise_dispute in the same transaction: raise_dispute derives its
+            // position as current_index - 1 (docs/DESIGN-v2.md, "raise_dispute,
+            // the one with real complexity", check 1). They cannot be split
+            // across two transactions.
+            let signature = send(&client, &[verify_instruction, raise_dispute_instruction], &buyer.pubkey(), &[&buyer])?;
+            print_step("[Ed25519 verify, raise_dispute]", &signature);
+
+            // CashDesk's arbiter resolves upheld. admin is the fee payer;
+            // cashdesk_arbiter only co-signs, since resolve_dispute's `arbiter`
+            // account is never `mut` -- it authorizes the ruling and pays
+            // nothing, which is exactly the "trusted judge, not a funded
+            // participant" role decision 2 (docs/DESIGN-v2.md) describes.
+            let resolve_instruction = Instruction::new_with_bytes(
+                program_id,
+                &truststake::instruction::ResolveDispute { upheld: true }.data(),
+                truststake::accounts::ResolveDisputeAccountConstraints {
+                    arbiter: cashdesk_arbiter.pubkey(),
+                    marketplace: cashdesk,
+                    dispute,
+                    permit: cashdesk_permit,
+                    stake,
+                    stake_vault,
+                    bond_vault: cashdesk_bond_vault,
+                    mint,
+                    buyer_token_account,
+                    token_program: spl_token::ID,
+                    event_authority,
+                    program: program_id,
+                }
+                .to_account_metas(None),
+            );
+            let signature = send(&client, &[resolve_instruction], &admin.pubkey(), &[&admin, &cashdesk_arbiter])?;
+            print_step("resolve_dispute(upheld = true)", &signature);
+            println!("CashDesk upheld the claim; see the payout reflected in CashDesk's permit below.");
+            set_bool(&mut progress, "step7_cashdesk_dispute_done", true);
+            save_progress(&progress)?;
+        }
     }
     println!();
 
@@ -874,11 +1069,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         println!();
     }
     if should_run(2) {
-        run_stage_2(&chain, &progress, &roster)?;
+        run_stage_2(&chain, &mut progress, &roster)?;
         println!();
     }
     if should_run(3) {
-        run_stage_3(&chain, &progress, &roster)?;
+        run_stage_3(&chain, &mut progress, &roster)?;
         println!();
     }
     if should_run(4) {
@@ -1031,12 +1226,18 @@ fn load_or_find_or_create_token_account(
     Ok(token_account)
 }
 
-/// Grants `permit` for `marketplace` if it does not already exist. Every
-/// `grant_permit` call in the original walk uses Anchor's `init`, which
-/// hard-errors against an already-occupied PDA, so this existence check is
-/// what makes the original walk's Step 5 safe to repeat.
+/// Grants `permit` for `marketplace` unless its lifecycle is already fully
+/// complete (`lifecycle_key` in progress.json) or it already exists.
+/// `lifecycle_key` is checked BEFORE existence -- see
+/// `decide_permit_grant`'s doc comment for why: an existence-only check
+/// (Anchor's `init` hard-errors against an already-occupied PDA, so SOME
+/// check is required for Step 5 to be safe to repeat) cannot tell "never
+/// granted" apart from "granted, then released by a later stage of this
+/// same script," and re-grants into the second case (D1).
 fn ensure_permit(
     chain: &Chain,
+    progress: &Value,
+    lifecycle_key: &str,
     seller: &Keypair,
     stake: Pubkey,
     marketplace: Pubkey,
@@ -1044,12 +1245,20 @@ fn ensure_permit(
     name: &str,
 ) -> Result<(), Box<dyn Error>> {
     let permit = permit_pda(chain.program_id, seller.pubkey(), marketplace);
-    if chain.client.get_account(&permit).is_ok() {
-        println!("grant_permit({name}): already granted, skipping");
-        return Ok(());
+    let lifecycle_done = get_bool(progress, lifecycle_key);
+    let permit_exists = chain.client.get_account(&permit).is_ok();
+    match decide_permit_grant(lifecycle_done, permit_exists) {
+        PermitGrantDecision::SkipLifecycleDone => {
+            println!("grant_permit({name}): permit lifecycle already complete (granted, revoked, released), skipping.");
+        }
+        PermitGrantDecision::SkipAlreadyGranted => {
+            println!("grant_permit({name}): already granted, skipping");
+        }
+        PermitGrantDecision::Grant => {
+            let signature = send_grant_permit(chain, seller, stake, marketplace, max_slashable)?;
+            print_step(&format!("grant_permit({name}, {})", format_usdc(max_slashable)), &signature);
+        }
     }
-    let signature = send_grant_permit(chain, seller, stake, marketplace, max_slashable)?;
-    print_step(&format!("grant_permit({name}, {})", format_usdc(max_slashable)), &signature);
     Ok(())
 }
 
@@ -1214,11 +1423,6 @@ fn read_permit(client: &RpcClient, pubkey: &Pubkey) -> Result<SlashPermit, Box<d
     let account = client.get_account(pubkey)?;
     Ok(SlashPermit::try_deserialize(&mut account.data.as_slice())
         .map_err(|error| format!("failed to deserialize SlashPermit at {pubkey}: {error}"))?)
-}
-
-fn try_read_permit(client: &RpcClient, pubkey: &Pubkey) -> Option<SlashPermit> {
-    let account = client.get_account(pubkey).ok()?;
-    SlashPermit::try_deserialize(&mut account.data.as_slice()).ok()
 }
 
 fn read_marketplace(client: &RpcClient, pubkey: &Pubkey) -> Result<Marketplace, Box<dyn Error>> {
@@ -1731,10 +1935,10 @@ fn run_stage_1(chain: &Chain, progress: &mut Value, roster: &StageRoster) -> Res
     stage1_5_swiftmarket_authority_transfer(chain, swiftmarket, &swiftmarket_authority, &swiftmarket_authority_v2)?;
     println!();
 
-    stage1_6_top_up_seller_free_collateral(chain, roster)?;
+    stage1_6_top_up_seller_free_collateral(chain, roster, swiftmarket)?;
     println!();
 
-    stage1_7_and_1_8_swiftmarket_permit(chain, roster, swiftmarket)?;
+    stage1_7_and_1_8_swiftmarket_permit(chain, progress, roster, swiftmarket)?;
     println!();
 
     let buyer_swiftmarket_token_account =
@@ -1924,15 +2128,23 @@ fn stage1_5_swiftmarket_authority_transfer(chain: &Chain, swiftmarket: Pubkey, a
     Ok(())
 }
 
-fn stage1_6_top_up_seller_free_collateral(chain: &Chain, roster: &StageRoster) -> Result<(), Box<dyn Error>> {
+fn stage1_6_top_up_seller_free_collateral(chain: &Chain, roster: &StageRoster, swiftmarket: Pubkey) -> Result<(), Box<dyn Error>> {
     println!("--- 1.6: add_stake (top up the original seller's free collateral for SwiftMarket) ---");
+    let swiftmarket_permit = permit_pda(chain.program_id, roster.seller.pubkey(), swiftmarket);
+    let swiftmarket_permit_exists = chain.client.get_account(&swiftmarket_permit).is_ok();
     let stake_state = read_seller_stake(chain.client, &roster.stake)?;
     let free = stake_state.staked.saturating_sub(stake_state.committed);
-    if free >= SELLER_FREE_COLLATERAL_TARGET {
-        println!("  Free collateral is already {} >= {}, skipping.", format_usdc(free), format_usdc(SELLER_FREE_COLLATERAL_TARGET));
-        return Ok(());
-    }
-    let shortfall = SELLER_FREE_COLLATERAL_TARGET - free;
+    let shortfall = match decide_free_collateral_topup(swiftmarket_permit_exists, free, SELLER_FREE_COLLATERAL_TARGET) {
+        TopUpDecision::SkipPermitAlreadyGranted => {
+            println!("  SwiftMarket's permit already exists -- this step's pre-grant top-up already happened, skipping.");
+            return Ok(());
+        }
+        TopUpDecision::SkipAlreadyAtTarget => {
+            println!("  Free collateral is already {} >= {}, skipping.", format_usdc(free), format_usdc(SELLER_FREE_COLLATERAL_TARGET));
+            return Ok(());
+        }
+        TopUpDecision::TopUp { shortfall } => shortfall,
+    };
     top_up_token_balance(chain.client, roster.admin, &chain.mint, &roster.seller_token_account, shortfall)?;
     let instruction = Instruction::new_with_bytes(
         chain.program_id,
@@ -1954,16 +2166,25 @@ fn stage1_6_top_up_seller_free_collateral(chain: &Chain, roster: &StageRoster) -
     Ok(())
 }
 
-fn stage1_7_and_1_8_swiftmarket_permit(chain: &Chain, roster: &StageRoster, swiftmarket: Pubkey) -> Result<(), Box<dyn Error>> {
+fn stage1_7_and_1_8_swiftmarket_permit(chain: &Chain, progress: &Value, roster: &StageRoster, swiftmarket: Pubkey) -> Result<(), Box<dyn Error>> {
     println!("--- 1.7: grant_permit(SwiftMarket, {}) ---", format_usdc(SWIFTMARKET_GRANT));
     let permit = permit_pda(chain.program_id, roster.seller.pubkey(), swiftmarket);
-    let granted_at_before = if let Some(existing) = try_read_permit(chain.client, &permit) {
-        println!("  Already granted, skipping.");
-        existing.granted_at
-    } else {
-        let signature = send_grant_permit(chain, roster.seller, roster.stake, swiftmarket, SWIFTMARKET_GRANT)?;
-        print_step(&format!("grant_permit(SwiftMarket, {})", format_usdc(SWIFTMARKET_GRANT)), &signature);
-        read_permit(chain.client, &permit)?.granted_at
+    let lifecycle_done = get_bool(progress, "seller_swiftmarket_permit_lifecycle_done");
+    let permit_exists = chain.client.get_account(&permit).is_ok();
+    let granted_at_before = match decide_permit_grant(lifecycle_done, permit_exists) {
+        PermitGrantDecision::SkipLifecycleDone => {
+            println!("  Permit lifecycle already complete (granted, revoked, released), skipping -- nothing to increase either.");
+            return Ok(());
+        }
+        PermitGrantDecision::SkipAlreadyGranted => {
+            println!("  Already granted, skipping.");
+            read_permit(chain.client, &permit)?.granted_at
+        }
+        PermitGrantDecision::Grant => {
+            let signature = send_grant_permit(chain, roster.seller, roster.stake, swiftmarket, SWIFTMARKET_GRANT)?;
+            print_step(&format!("grant_permit(SwiftMarket, {})", format_usdc(SWIFTMARKET_GRANT)), &signature);
+            read_permit(chain.client, &permit)?.granted_at
+        }
     };
 
     println!("--- 1.8: increase_permit(SwiftMarket, +{}) ---", format_usdc(SWIFTMARKET_INCREASE));
@@ -2140,11 +2361,30 @@ fn stage1_10_cashdesk_second_dispute(
     };
 
     let dispute = dispute_pda(chain.program_id, roster.cashdesk, roster.seller.pubkey(), order_id);
-    let dispute_state = read_dispute(chain.client, &dispute)?;
-    if dispute_state.status != DisputeStatus::Open as u8 {
-        println!("  Already resolved, skipping.");
-        return Ok(());
-    }
+    let resolved_flag = get_bool(progress, "cashdesk_second_dispute_resolved");
+    let dispute_state_opt = if resolved_flag { None } else { try_read_dispute(chain.client, &dispute) };
+    let decision = decide_second_dispute_resolve(resolved_flag, dispute_state_opt.as_ref().map(|state| state.status));
+    let dispute_state = match decision {
+        SecondDisputeResolveDecision::SkipFlagSet => {
+            println!("  Already resolved (recorded in a previous run), skipping.");
+            return Ok(());
+        }
+        SecondDisputeResolveDecision::SkipDisputeGone => {
+            // D2-sibling: stage 4.2a eventually closes exactly this
+            // DisputeRecord. close_dispute only ever succeeds on a
+            // non-Open dispute, so its absence here always implies it was
+            // already resolved -- never that raise_dispute needs redoing.
+            println!("  Dispute record no longer exists (closed in a previous run); treating as already resolved.");
+            set_bool(progress, "cashdesk_second_dispute_resolved", true);
+            return Ok(());
+        }
+        SecondDisputeResolveDecision::SkipAlreadyResolved => {
+            println!("  Already resolved, skipping.");
+            set_bool(progress, "cashdesk_second_dispute_resolved", true);
+            return Ok(());
+        }
+        SecondDisputeResolveDecision::Proceed => dispute_state_opt.expect("Proceed implies the dispute account was read successfully"),
+    };
 
     let stake_before = read_seller_stake(chain.client, &roster.stake)?;
     let permit = permit_pda(chain.program_id, roster.seller.pubkey(), roster.cashdesk);
@@ -2190,6 +2430,7 @@ fn stage1_10_cashdesk_second_dispute(
         format_usdc(stake_after.staked)
     );
     println!("  This dispute is stage 4's close_dispute target.");
+    set_bool(progress, "cashdesk_second_dispute_resolved", true);
     Ok(())
 }
 
@@ -2248,67 +2489,156 @@ fn stage1_11_seller_b(chain: &Chain, progress: &mut Value, roster: &StageRoster,
         println!("  add_stake(seller_b): already staked {} >= {}, skipping.", format_usdc(current_staked), format_usdc(SELLER_B_STAKE));
     }
 
-    ensure_permit(chain, seller_b, stake, roster.cashdesk, SELLER_B_CASHDESK_PERMIT, "seller_b x CashDesk")?;
-    ensure_permit(chain, seller_b, stake, roster.pixelbazaar, SELLER_B_PIXELBAZAAR_PERMIT, "seller_b x PixelBazaar")?;
+    ensure_permit(chain, progress, "seller_b_cashdesk_permit_lifecycle_done", seller_b, stake, roster.cashdesk, SELLER_B_CASHDESK_PERMIT, "seller_b x CashDesk")?;
+    ensure_permit(
+        chain,
+        progress,
+        "seller_b_pixelbazaar_permit_lifecycle_done",
+        seller_b,
+        stake,
+        roster.pixelbazaar,
+        SELLER_B_PIXELBAZAAR_PERMIT,
+        "seller_b x PixelBazaar",
+    )?;
 
-    let cashdesk_revoked_at = ensure_revoked(chain, progress, "seller_b_cashdesk_revoked_at", seller_b, roster.cashdesk, "seller_b x CashDesk")?;
-    let pixelbazaar_revoked_at =
-        ensure_revoked(chain, progress, "seller_b_pixelbazaar_revoked_at", seller_b, roster.pixelbazaar, "seller_b x PixelBazaar")?;
+    let cashdesk_revoked_at = ensure_revoked(
+        chain,
+        progress,
+        "seller_b_cashdesk_permit_lifecycle_done",
+        "seller_b_cashdesk_revoked_at",
+        seller_b,
+        roster.cashdesk,
+        "seller_b x CashDesk",
+    )?;
+    let pixelbazaar_revoked_at = ensure_revoked(
+        chain,
+        progress,
+        "seller_b_pixelbazaar_permit_lifecycle_done",
+        "seller_b_pixelbazaar_revoked_at",
+        seller_b,
+        roster.pixelbazaar,
+        "seller_b x PixelBazaar",
+    )?;
 
-    println!("  seller_b's CashDesk permit revoked at {cashdesk_revoked_at} (stage 3's release_permit target, 2-day window);");
-    println!("  seller_b's PixelBazaar permit revoked at {pixelbazaar_revoked_at} (stage 2's release_permit_early target).");
+    match cashdesk_revoked_at {
+        Some(revoked_at) => println!("  seller_b's CashDesk permit revoked at {revoked_at} (stage 3's release_permit target, 2-day window);"),
+        None => println!("  seller_b's CashDesk permit: nothing to report this run (see above)."),
+    }
+    match pixelbazaar_revoked_at {
+        Some(revoked_at) => println!("  seller_b's PixelBazaar permit revoked at {revoked_at} (stage 2's release_permit_early target)."),
+        None => println!("  seller_b's PixelBazaar permit: nothing to report this run (see above)."),
+    }
     println!("  Using a second seller keeps the original seller's richer state (two permits, one slashed) intact,");
     println!("  since both release paths CLOSE the permit account.");
     Ok(())
 }
 
+/// Revokes `marketplace`'s permit for `seller` unless its lifecycle is
+/// already complete or the LIVE permit account is already revoked. Reads
+/// the permit account's own `revoked_at` field as ground truth rather than
+/// trusting a cached value blindly -- the ensure_revoked-staleness fix: a
+/// cached value from an EARLIER era at this same PDA (left behind by D1's
+/// bug) must never be reported as this era's revocation time, and this run
+/// doesn't revoke on that stray era's behalf either (item 8: a permit this
+/// run did not grant isn't this run's to act on).
 fn ensure_revoked(
     chain: &Chain,
     progress: &mut Value,
-    progress_key: &str,
+    lifecycle_key: &str,
+    revoked_key: &str,
     seller: &Keypair,
     marketplace: Pubkey,
     name: &str,
-) -> Result<i64, Box<dyn Error>> {
-    if let Some(revoked_at) = get_i64(progress, progress_key) {
-        return Ok(revoked_at);
-    }
+) -> Result<Option<i64>, Box<dyn Error>> {
+    let lifecycle_done = get_bool(progress, lifecycle_key);
     let permit = permit_pda(chain.program_id, seller.pubkey(), marketplace);
-    let state = read_permit(chain.client, &permit)?;
-    let revoked_at = if state.revoked_at != i64::MAX {
-        state.revoked_at
+    let cached_revoked_at = get_i64(progress, revoked_key);
+    let live_revoked_at = if lifecycle_done {
+        None
     } else {
-        let signature = send_revoke_permit(chain, seller, marketplace)?;
-        print_step(&format!("revoke_permit({name})"), &signature);
-        read_permit(chain.client, &permit)?.revoked_at
+        let state = read_permit(chain.client, &permit)?;
+        (state.revoked_at != i64::MAX).then_some(state.revoked_at)
     };
-    set_i64(progress, progress_key, revoked_at);
-    Ok(revoked_at)
+
+    match decide_permit_revoke(lifecycle_done, live_revoked_at, cached_revoked_at) {
+        PermitRevokeDecision::SkipLifecycleDone => {
+            println!("  {name}: permit lifecycle already complete, skipping revoke.");
+            Ok(None)
+        }
+        PermitRevokeDecision::SkipStaleCache => {
+            println!(
+                "  {name}: a permit exists at this address but is unrevoked, while progress.json remembers \
+                 an earlier revocation at this same PDA -- a previous run re-granted here after release \
+                 (docs/DEMO-SCRIPT-FINDINGS.md, item 8). Leaving it untouched."
+            );
+            Ok(None)
+        }
+        PermitRevokeDecision::UseLiveRevokedAt(revoked_at) => {
+            if cached_revoked_at != Some(revoked_at) {
+                set_i64(progress, revoked_key, revoked_at);
+            }
+            Ok(Some(revoked_at))
+        }
+        PermitRevokeDecision::Revoke => {
+            let signature = send_revoke_permit(chain, seller, marketplace)?;
+            print_step(&format!("revoke_permit({name})"), &signature);
+            let revoked_at = read_permit(chain.client, &permit)?.revoked_at;
+            set_i64(progress, revoked_key, revoked_at);
+            Ok(Some(revoked_at))
+        }
+    }
 }
 
 // ==================== Stage 2 ====================
 
-fn run_stage_2(chain: &Chain, progress: &Value, roster: &StageRoster) -> Result<(), Box<dyn Error>> {
+fn run_stage_2(chain: &Chain, progress: &mut Value, roster: &StageRoster) -> Result<(), Box<dyn Error>> {
     println!("=== Stage 2: release_permit_early on seller B's PixelBazaar permit ===");
     let seller_b = load_or_create_keypair(&keypairs_dir(), "seller_b")?;
     let permit = permit_pda(chain.program_id, seller_b.pubkey(), roster.pixelbazaar);
+    let lifecycle_key = "seller_b_pixelbazaar_permit_lifecycle_done";
 
-    if chain.client.get_account(&permit).is_err() {
-        println!("  Already released, skipping.");
-        return Ok(());
-    }
+    let lifecycle_done = get_bool(progress, lifecycle_key);
+    let permit_exists = chain.client.get_account(&permit).is_ok();
+    let cached_revoked_at = get_i64(progress, "seller_b_pixelbazaar_revoked_at");
+    let live_revoked_at = if permit_exists {
+        let state = read_permit(chain.client, &permit)?;
+        (state.revoked_at != i64::MAX).then_some(state.revoked_at)
+    } else {
+        None
+    };
+    let now = now_unix();
 
-    let Some(revoked_at) = get_i64(progress, "seller_b_pixelbazaar_revoked_at") else {
-        println!("  Not yet reachable: stage 1.11 has not recorded seller_b's PixelBazaar revocation yet. Run stage 1 first.");
-        return Ok(());
+    let revoked_at = match decide_permit_release(lifecycle_done, permit_exists, live_revoked_at, cached_revoked_at, CLOCK_SKEW_TOLERANCE_SECONDS, now) {
+        PermitReleaseDecision::SkipLifecycleDone => {
+            println!("  Already released in a previous run, skipping.");
+            return Ok(());
+        }
+        PermitReleaseDecision::SkipAlreadyReleased => {
+            println!("  Permit account no longer exists and a revocation was already recorded; treating release as already complete.");
+            set_bool(progress, lifecycle_key, true);
+            save_progress(progress)?;
+            return Ok(());
+        }
+        PermitReleaseDecision::SkipUnrevoked => {
+            println!(
+                "  A permit exists at this address but is not revoked -- that's stage 1.11's job, not stage 2's. \
+                 Treating stage 2 as already complete for this permit rather than acting on state it doesn't own \
+                 (docs/DEMO-SCRIPT-FINDINGS.md, item 8: a prior run's bug can leave exactly this shape)."
+            );
+            return Ok(());
+        }
+        PermitReleaseDecision::NotYetReachable => {
+            println!("  Not yet reachable: stage 1.11 has not recorded seller_b's PixelBazaar revocation yet. Run stage 1 first.");
+            return Ok(());
+        }
+        PermitReleaseDecision::NotYetDue { remaining_seconds } => {
+            println!("  Not yet due ({remaining_seconds} seconds remaining).");
+            return Ok(());
+        }
+        PermitReleaseDecision::Proceed { revoked_at } => revoked_at,
     };
     let due_at = revoked_at + CLOCK_SKEW_TOLERANCE_SECONDS;
-    let now = now_unix();
     println!("  Required: now >= revoked_at ({revoked_at}) + CLOCK_SKEW_TOLERANCE_SECONDS ({CLOCK_SKEW_TOLERANCE_SECONDS}) = {due_at}. Actual now: {now}.");
-    if now < due_at {
-        println!("  Not yet due ({} seconds remaining).", due_at - now);
-        return Ok(());
-    }
 
     let stake = stake_pda(chain.program_id, seller_b.pubkey());
     let stake_before = read_seller_stake(chain.client, &stake)?;
@@ -2333,37 +2663,70 @@ fn run_stage_2(chain: &Chain, progress: &Value, roster: &StageRoster) -> Result<
         return Err("expected the permit account to no longer exist after release_permit_early".into());
     }
     println!("  Confirmed: committed dropped by {}, permit account is gone.", format_usdc(remaining_allowance));
+    set_bool(progress, lifecycle_key, true);
+    save_progress(progress)?;
     Ok(())
 }
 
 // ==================== Stage 3 ====================
 
-fn run_stage_3(chain: &Chain, progress: &Value, roster: &StageRoster) -> Result<(), Box<dyn Error>> {
+fn run_stage_3(chain: &Chain, progress: &mut Value, roster: &StageRoster) -> Result<(), Box<dyn Error>> {
     println!("=== Stage 3: release_permit on seller B's CashDesk permit ===");
     let seller_b = load_or_create_keypair(&keypairs_dir(), "seller_b")?;
     let permit = permit_pda(chain.program_id, seller_b.pubkey(), roster.cashdesk);
+    let lifecycle_key = "seller_b_cashdesk_permit_lifecycle_done";
 
-    if chain.client.get_account(&permit).is_err() {
-        println!("  Already released, skipping.");
-        return Ok(());
-    }
-
-    let Some(revoked_at) = get_i64(progress, "seller_b_cashdesk_revoked_at") else {
-        println!("  Not yet reachable: stage 1.11 has not recorded seller_b's CashDesk revocation yet. Run stage 1 first.");
-        return Ok(());
+    let lifecycle_done = get_bool(progress, lifecycle_key);
+    let permit_exists = chain.client.get_account(&permit).is_ok();
+    let cached_revoked_at = get_i64(progress, "seller_b_cashdesk_revoked_at");
+    // Stage 3's wait, unlike stage 2's, depends on the LIVE permit's own
+    // complaint_window (grandfathering, docs/DESIGN-v2.md) -- only readable
+    // while the permit exists, so `wait_seconds` falls back to the
+    // clock-skew tolerance alone when it doesn't (that branch of
+    // decide_permit_release never uses it).
+    let (live_revoked_at, wait_seconds) = if permit_exists {
+        let state = read_permit(chain.client, &permit)?;
+        ((state.revoked_at != i64::MAX).then_some(state.revoked_at), state.complaint_window.max(CLOCK_SKEW_TOLERANCE_SECONDS))
+    } else {
+        (None, CLOCK_SKEW_TOLERANCE_SECONDS)
     };
-    let permit_state = read_permit(chain.client, &permit)?;
-    let due_at = revoked_at + permit_state.complaint_window.max(CLOCK_SKEW_TOLERANCE_SECONDS);
     let now = now_unix();
-    println!(
-        "  Required: now >= revoked_at ({revoked_at}) + max(complaint_window {}, clock-skew tolerance {CLOCK_SKEW_TOLERANCE_SECONDS}) = {due_at}. Actual now: {now}.",
-        permit_state.complaint_window
-    );
-    if now < due_at {
-        println!("  Not yet due ({} seconds remaining).", due_at - now);
-        return Ok(());
-    }
 
+    let revoked_at = match decide_permit_release(lifecycle_done, permit_exists, live_revoked_at, cached_revoked_at, wait_seconds, now) {
+        PermitReleaseDecision::SkipLifecycleDone => {
+            println!("  Already released in a previous run, skipping.");
+            return Ok(());
+        }
+        PermitReleaseDecision::SkipAlreadyReleased => {
+            println!("  Permit account no longer exists and a revocation was already recorded; treating release as already complete.");
+            set_bool(progress, lifecycle_key, true);
+            save_progress(progress)?;
+            return Ok(());
+        }
+        PermitReleaseDecision::SkipUnrevoked => {
+            println!(
+                "  A permit exists at this address but is not revoked -- that's stage 1.11's job, not stage 3's. \
+                 Treating stage 3 as already complete for this permit rather than acting on state it doesn't own \
+                 (docs/DEMO-SCRIPT-FINDINGS.md, item 8: a prior run's bug can leave exactly this shape)."
+            );
+            return Ok(());
+        }
+        PermitReleaseDecision::NotYetReachable => {
+            println!("  Not yet reachable: stage 1.11 has not recorded seller_b's CashDesk revocation yet. Run stage 1 first.");
+            return Ok(());
+        }
+        PermitReleaseDecision::NotYetDue { remaining_seconds } => {
+            println!("  Not yet due ({remaining_seconds} seconds remaining).");
+            return Ok(());
+        }
+        PermitReleaseDecision::Proceed { revoked_at } => revoked_at,
+    };
+    let due_at = revoked_at + wait_seconds;
+    println!(
+        "  Required: now >= revoked_at ({revoked_at}) + max(complaint_window, clock-skew tolerance) ({wait_seconds}) = {due_at}. Actual now: {now}."
+    );
+
+    let permit_state = read_permit(chain.client, &permit)?;
     let remaining_allowance = permit_state.max_slashable - permit_state.slashed;
     let stake = stake_pda(chain.program_id, seller_b.pubkey());
     let stake_before = read_seller_stake(chain.client, &stake)?;
@@ -2394,6 +2757,8 @@ fn run_stage_3(chain: &Chain, progress: &Value, roster: &StageRoster) -> Result<
         "  Confirmed: committed dropped by {}, permit account is gone, rent went to seller_b ({rent_before} -> {rent_after} lamports).",
         format_usdc(remaining_allowance)
     );
+    set_bool(progress, lifecycle_key, true);
+    save_progress(progress)?;
     Ok(())
 }
 
@@ -2519,4 +2884,222 @@ fn try_close_dispute(chain: &Chain, stranger: &Keypair, dispute: Pubkey, label: 
     }
     println!("  {label}: confirmed closed, rent refunded to buyer ({rent_before} -> {rent_after} lamports).");
     Ok(())
+}
+
+// ==================== Guard decision unit tests ====================
+//
+// These exercise the pure decision functions above directly -- no
+// RpcClient, no devnet -- since tests/test_devnet_demo_parity.rs replays
+// this file's instruction sequence against LiteSVM without ever running a
+// guard (see that file's module docs), so this is the only place any of
+// this script's own decision logic gets tested at all. Named regressions
+// map onto docs/DEMO-SCRIPT-FINDINGS.md's defect list (D1, D1-mirror,
+// ensure_revoked staleness, D2, D2-sibling, D3, the two latent D1 siblings,
+// and item 8's stray-permit tolerance).
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ---------- decide_permit_grant ----------
+
+    #[test]
+    fn grant_when_never_granted() {
+        assert_eq!(decide_permit_grant(false, false), PermitGrantDecision::Grant);
+    }
+
+    #[test]
+    fn skip_when_already_granted_this_era() {
+        assert_eq!(decide_permit_grant(false, true), PermitGrantDecision::SkipAlreadyGranted);
+    }
+
+    #[test]
+    fn d1_regrant_after_release_is_recognized_as_done() {
+        // D1: the permit account is gone (released by an earlier stage of
+        // this same run/invocation), which the pre-fix guard read as "never
+        // granted" and re-granted into. The lifecycle flag, once true, must
+        // win over that same observation.
+        assert_eq!(decide_permit_grant(true, false), PermitGrantDecision::SkipLifecycleDone);
+    }
+
+    #[test]
+    fn lifecycle_done_flag_wins_even_if_account_somehow_reexists() {
+        assert_eq!(decide_permit_grant(true, true), PermitGrantDecision::SkipLifecycleDone);
+    }
+
+    #[test]
+    fn latent_sibling_step5_grant_guard_respects_lifecycle_flag() {
+        // Step 5 grants the ORIGINAL seller's CashDesk/PixelBazaar permits
+        // with this exact function; nothing releases them today, so
+        // lifecycle_done is always false in practice, but the guard must
+        // still be ready the moment a release step is added.
+        assert_eq!(decide_permit_grant(true, false), PermitGrantDecision::SkipLifecycleDone);
+        assert_eq!(decide_permit_grant(false, false), PermitGrantDecision::Grant);
+    }
+
+    #[test]
+    fn latent_sibling_step1_7_swiftmarket_grant_guard_respects_lifecycle_flag() {
+        // Step 1.7 grants the ORIGINAL seller's SwiftMarket permit with the
+        // same decision function, same reasoning as the CashDesk/PixelBazaar
+        // case above.
+        assert_eq!(decide_permit_grant(true, false), PermitGrantDecision::SkipLifecycleDone);
+        assert_eq!(decide_permit_grant(false, false), PermitGrantDecision::Grant);
+    }
+
+    // ---------- decide_permit_revoke ----------
+
+    #[test]
+    fn revoke_when_freshly_granted_and_unrevoked_with_no_history() {
+        assert_eq!(decide_permit_revoke(false, None, None), PermitRevokeDecision::Revoke);
+    }
+
+    #[test]
+    fn use_live_value_when_already_revoked() {
+        assert_eq!(decide_permit_revoke(false, Some(1_700_000_000), None), PermitRevokeDecision::UseLiveRevokedAt(1_700_000_000));
+    }
+
+    #[test]
+    fn revoke_skips_entirely_once_lifecycle_is_done() {
+        assert_eq!(decide_permit_revoke(true, None, None), PermitRevokeDecision::SkipLifecycleDone);
+    }
+
+    #[test]
+    fn ensure_revoked_staleness_cached_value_not_trusted_when_permit_is_unrevoked() {
+        // The permit currently at this PDA is NOT revoked (live_revoked_at
+        // is None), yet progress.json remembers a revocation from an
+        // EARLIER era at the same PDA. That cached value must not be
+        // handed out as if it described the live permit.
+        let stale_cached_revoked_at = Some(1_700_000_000);
+        assert_eq!(decide_permit_revoke(false, None, stale_cached_revoked_at), PermitRevokeDecision::SkipStaleCache);
+    }
+
+    #[test]
+    fn item8_stray_unrevoked_permit_is_not_revoked_by_this_run() {
+        // Same chain shape as the staleness case: a pre-existing unrevoked
+        // permit this run did not create. The fix must not act on it
+        // (neither report the stale cached value nor call revoke_permit).
+        let stale_cached_revoked_at = Some(1_788_000_000);
+        assert_eq!(decide_permit_revoke(false, None, stale_cached_revoked_at), PermitRevokeDecision::SkipStaleCache);
+    }
+
+    // ---------- decide_permit_release ----------
+
+    #[test]
+    fn release_proceeds_once_due() {
+        let decision = decide_permit_release(false, true, Some(1_000), Some(1_000), 100, 1_200);
+        assert_eq!(decision, PermitReleaseDecision::Proceed { revoked_at: 1_000 });
+    }
+
+    #[test]
+    fn release_not_yet_due() {
+        let decision = decide_permit_release(false, true, Some(1_000), Some(1_000), 100, 1_050);
+        assert_eq!(decision, PermitReleaseDecision::NotYetDue { remaining_seconds: 50 });
+    }
+
+    #[test]
+    fn release_skips_once_lifecycle_is_done() {
+        let decision = decide_permit_release(true, true, Some(1_000), Some(1_000), 100, 999_999);
+        assert_eq!(decision, PermitReleaseDecision::SkipLifecycleDone);
+    }
+
+    #[test]
+    fn release_not_yet_reachable_when_nothing_recorded() {
+        let decision = decide_permit_release(false, false, None, None, 100, 1_200);
+        assert_eq!(decision, PermitReleaseDecision::NotYetReachable);
+    }
+
+    #[test]
+    fn release_self_heals_when_account_gone_but_revocation_was_recorded() {
+        let decision = decide_permit_release(false, false, None, Some(1_000), 100, 1_200);
+        assert_eq!(decision, PermitReleaseDecision::SkipAlreadyReleased);
+    }
+
+    #[test]
+    fn d1_mirror_regrant_after_release_is_not_treated_as_already_released_or_due() {
+        // D1-mirror: the permit account EXISTS again (D1 re-granted it) but
+        // is not revoked. The pre-fix guard inferred "already released"
+        // purely from non-existence, which is exactly backwards once the
+        // account has been re-created. The fixed guard must neither treat
+        // this as done nor attempt release_permit_early against it.
+        let decision = decide_permit_release(false, true, None, Some(1_000), 100, 1_200);
+        assert_eq!(decision, PermitReleaseDecision::SkipUnrevoked);
+    }
+
+    #[test]
+    fn item8_stray_unrevoked_permit_release_guard_does_not_attempt_release() {
+        let decision = decide_permit_release(false, true, None, Some(1_788_000_000), CLOCK_SKEW_TOLERANCE_SECONDS, 2_000_000_000);
+        assert_eq!(decision, PermitReleaseDecision::SkipUnrevoked);
+    }
+
+    // ---------- decide_free_collateral_topup ----------
+
+    #[test]
+    fn topup_needed_before_permit_granted() {
+        assert_eq!(decide_free_collateral_topup(false, 0, usdc(200)), TopUpDecision::TopUp { shortfall: usdc(200) });
+    }
+
+    #[test]
+    fn topup_skips_when_already_at_target_pre_grant() {
+        assert_eq!(decide_free_collateral_topup(false, usdc(200), usdc(200)), TopUpDecision::SkipAlreadyAtTarget);
+    }
+
+    #[test]
+    fn d3_topup_target_correct_after_later_commits() {
+        // The permit already exists (1.7/1.8 already committed 150 of the
+        // 200 this step topped up), so live free collateral is only 50 --
+        // below the 200 target. The pre-fix guard re-evaluated "free >=
+        // 200" post-grant and topped up again, overshooting. Once the
+        // permit exists, this step's job is already done regardless of
+        // what free collateral looks like now.
+        assert_eq!(decide_free_collateral_topup(true, usdc(50), usdc(200)), TopUpDecision::SkipPermitAlreadyGranted);
+    }
+
+    // ---------- decide_step7_dispute ----------
+
+    #[test]
+    fn step7_proceeds_when_never_done() {
+        assert_eq!(decide_step7_dispute(false, 0, usdc(80)), Step7DisputeDecision::Proceed);
+    }
+
+    #[test]
+    fn step7_skips_when_flag_already_set() {
+        assert_eq!(decide_step7_dispute(true, 0, usdc(80)), Step7DisputeDecision::SkipFlagSet);
+    }
+
+    #[test]
+    fn d2_step7_guard_survives_stage4_close() {
+        // Stage 4.2 closes the DisputeRecord that step 7's OLD guard
+        // scanned for, so after that close a fresh scan finds nothing and
+        // the old guard would re-raise a second real claim. The permit's
+        // `slashed` total is never touched by close_dispute, so it still
+        // proves the claim already landed even with the flag unset (the
+        // exact migration state of a run predating this flag).
+        assert_eq!(decide_step7_dispute(false, usdc(80), usdc(80)), Step7DisputeDecision::SkipAlreadySlashed);
+    }
+
+    // ---------- decide_second_dispute_resolve ----------
+
+    #[test]
+    fn second_dispute_proceeds_while_open() {
+        assert_eq!(decide_second_dispute_resolve(false, Some(DisputeStatus::Open as u8)), SecondDisputeResolveDecision::Proceed);
+    }
+
+    #[test]
+    fn second_dispute_skips_when_flag_already_set() {
+        assert_eq!(decide_second_dispute_resolve(true, Some(DisputeStatus::Open as u8)), SecondDisputeResolveDecision::SkipFlagSet);
+    }
+
+    #[test]
+    fn second_dispute_skips_when_already_resolved_onchain() {
+        assert_eq!(decide_second_dispute_resolve(false, Some(DisputeStatus::Rejected as u8)), SecondDisputeResolveDecision::SkipAlreadyResolved);
+    }
+
+    #[test]
+    fn d2_sibling_dispute_gone_is_treated_as_resolved_not_reraised() {
+        // D2-sibling: stage 4.2a closes exactly this DisputeRecord. The
+        // pre-fix guard did a hard `read_dispute(...)?` that error-crashes
+        // the whole script once the account is gone. close_dispute only
+        // ever succeeds on a non-Open dispute, so "gone" always implies
+        // "was resolved" -- never "still open, re-resolve it."
+        assert_eq!(decide_second_dispute_resolve(false, None), SecondDisputeResolveDecision::SkipDisputeGone);
+    }
 }
