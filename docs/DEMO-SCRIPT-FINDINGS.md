@@ -62,7 +62,7 @@ Measured 2026-09-03:
   `is_ok()`, `try_read_*`, `get_i64(progress …)`)
 
 So the demo script is the only substantial Rust in this repo with **no test coverage of its
-own logic**, and both of its real bugs lived exactly there. Neither the 151-test suite nor
+own logic**, and both of its real bugs lived exactly there. Neither the 152-test suite nor
 the two parity tests could have caught either one. That is a structural gap, not bad luck.
 
 ---
