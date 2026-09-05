@@ -19,7 +19,7 @@ of collateral backs a seller across every marketplace, and the loss record trave
 
 ## Stack and dependencies
 
-Rust only: 9,197 lines across 39 files, of which `programs/truststake/src` is the protocol
+Rust only: 15,209 lines across 41 files, of which `programs/truststake/src` is the protocol
 and `programs/cpi_wrapper` is a two-handler test fixture that is never deployed. Anchor
 1.1.2 exactly, matched by `anchor-spl` 1.1.2, against Solana crates on the 3.x line. Tests
 run in LiteSVM 0.10.0 with the `precompiles` feature, which is what lets Ed25519
@@ -184,7 +184,7 @@ seller's free balance grows without a deposit.
 
 | Control | Where | Note |
 | --- | --- | --- |
-| Checked arithmetic | 29 `checked_*` call sites | no `saturating_*` on any balance; the only one in the program is on a byte offset that is bounds-checked immediately |
+| Checked arithmetic | 34 `checked_*` call sites | no `saturating_*` on any balance; the only one in the program is on a byte offset that is bounds-checked immediately |
 | Basis-point maths | `bond_for` | casts to `u128`, multiplies before dividing, rounds the bond up so a small claim cannot buy a free complaint |
 | Account binding | every handler | seeds re-derived from stored fields, `has_one` for live keys, no account left unbound |
 | Mint binding | every token handler | bound to the vault being moved, `transfer_checked` throughout |
@@ -193,8 +193,8 @@ seller's free balance grows without a deposit.
 | Domain separation | receipt `domain`, `program_id`, `chain_id` | a signature from another context cannot be read as a receipt |
 | Events | 19 `emit_cpi!` events | buyer history is derived from these, so `emit_cpi!` rather than `emit!` |
 
-Coverage as of Phase 4: 132 tests passing with no warnings, every one of the nineteen
-handlers exercised, and every one of the 38 error variants asserted by name somewhere in the
+Coverage as of Phase 4: 152 tests passing with no warnings, every one of the nineteen
+handlers exercised, and every one of the 40 error variants asserted by name somewhere in the
 suite. `raise_dispute` measures 953 bytes of the 1,232-byte transaction limit. Its compute
 cost is not a single figure: the `dispute` PDA's canonical bump is searched for onchain and
 one of its seeds is the seller's freshly generated pubkey, so measured runs against the same

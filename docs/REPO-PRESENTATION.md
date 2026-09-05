@@ -105,7 +105,8 @@ Fetched live from the API on 2026-09-01 for `baigi-bawander/trust_stake`:
 
 ## What to actually do, in priority order
 
-1. **Push.** Everything else is cosmetic next to this.
+1. **Push.** Everything else is cosmetic next to this. **Done 2026-09-04** (`c1194d4`,
+   CI run #11 green).
 2. **`solana-verify`** — publish the verify command in the README, and commit a
    `.verified-build.json`. Highest credibility per unit of effort, and it works on devnet.
    Note: this must be done without disturbing the `declare_id!` / keypair situation
@@ -142,13 +143,15 @@ half-built.
 - The two v1-era leftover accounts on devnet (`BTz2X7iCpXCSLSEWQRyWM31v5rQ5QqJnwJi9b9LmzRSJ`,
   41 bytes, v1 `Config`; `FXgrh8osZawRur4FqGBiTb9xQspRyNTy7K9PXrQp5ojr`, 53 bytes, v1
   `SellerStake`) hold ~0.0074 SOL and can never be closed — the v1 code that owned them was
-  overwritten by the in-place upgrade. They make `getProgramAccounts` return 16 where the
-  five v2 types account for 14. Parked deliberately; sweeping them would mean shipping a
-  handler purely to reclaim a fraction of a cent of devnet SOL.
-- `CLAUDE.md` describes the fifth cross-phase bug (`closable_after`) backwards. The pre-fix
-  code used `MAX_COMPLAINT_WINDOW_SECONDS` flat, not the live permit's window — see
-  `git show 34c5483:programs/truststake/src/instructions/raise_dispute.rs`. Fix on the next
-  docs pass, and check whether `DESIGN-v2.md` carries the same error.
+  overwritten by the in-place upgrade. As of 2026-09-05 they make `getProgramAccounts` return
+  **15** total, where the five v2 account types (1 `Config`, 3 `Marketplace`, 2
+  `SellerStake`, 4 `SlashPermit`, 3 `DisputeRecord`) account for 13 — both figures grown from
+  this file's 2026-09-01 research as the four-stage demo has run; see the audit section's A7.
+  Parked deliberately; sweeping the two leftovers would mean shipping a handler purely to
+  reclaim a fraction of a cent of devnet SOL.
+- ~~`CLAUDE.md` describes the fifth cross-phase bug (`closable_after`) backwards.~~
+  **RESOLVED 2026-09-05, see the audit section's A5.** `DESIGN-v2.md` repeated the same
+  error and was fixed alongside it.
 - The dashboard's frozen fallback snapshot carries pre-stage-2 figures and one invented
   dispute amount. Best refreshed after stage 3 lands rather than twice.
 - The dashboard is not under version control.
@@ -167,10 +170,12 @@ holding other people's money.
 
 # Documentation accuracy audit
 
-Added 2026-09-03. A read of all seven `.md` files in the repo, with every numeric claim
-re-measured by command rather than compared against an earlier version of itself. Listed
-worst-first. **These are for a dedicated documentation session; none should be fixed as a
-side effect of another task.**
+Added 2026-09-03 (A1-A6). A read of all seven `.md` files in the repo, with every numeric
+claim re-measured by command rather than compared against an earlier version of itself.
+Listed worst-first. A second sweep on 2026-09-05 found six more (A7-A12) plus a duplicate of
+A4 (A13), all from facts that had moved since the first sweep rather than from anything the
+first sweep missed. **These were findings for a dedicated documentation session; that session
+happened 2026-09-05, and all thirteen are now resolved -- see "Checked and accurate" below.**
 
 ## A1 — `README.md` publishes a deploy command this project forbids
 
@@ -190,6 +195,10 @@ actually deployed. The correct form is `solana program deploy --program-id
 This is the only finding here that actively misleads a reader into doing the wrong thing, and
 the README is the public face of the repo. Fix first.
 
+**RESOLVED 2026-09-05.** README's Deploy section now gives the `solana program deploy
+--program-id ...` form and explains why `anchor deploy` is wrong, carrying across the
+`solana program show --buffers` retry advice already in `CLAUDE.md`.
+
 ## A2 — Three documents carry three different test counts, none confirmed
 
 | Source | Claim |
@@ -207,11 +216,20 @@ exactly one because Anchor's `declare_id!` macro generates a `test_id` test that
 to 152. A separate 28-test suite covers the demo script's guards and is counted apart:
 `OPENSSL_NO_VENDOR=1 cargo test --example devnet_demo --features devnet_demo`.
 
+**Both corrected 2026-09-05**, re-verified against a fresh `cargo test` run (152) and the
+guard suite (28); both documents now also mention the separate guard suite.
+
 ## A3 — `docs/SECURITY-CONTEXT.md` undercounts the checked-arithmetic sites
 
 Line 187 claims 29 `checked_*` call sites. `grep -rn checked_ programs/truststake/src/ | wc -l`
 returns **34** (2026-09-03). `docs/IMPLEMENTATION-FINDINGS.md` also says 29, but it is
 explicitly a dated Phase 3 snapshot, so it is stale-by-design rather than wrong.
+
+**RESOLVED 2026-09-05**, re-verified at 34. The same pass also caught and fixed two adjacent
+stale figures on the same lines: the file's line-count claim (9,197 lines/39 files, now
+15,209/41 for all of `programs/`) and its error-variant count (38, now 40 — two variants,
+`AccountVersionMismatch` and `UnsupportedMintExtension`, were appended since it was written;
+both are asserted by name in `tests/`, confirmed by grep).
 
 ## A4 — A recommended fix from the project's own findings was never applied
 
@@ -222,6 +240,14 @@ fix is to state that bound wherever the 30-day figure is quoted to sellers. A gr
 `complaint_window + DISPUTE_EXPIRY`, `60 days` and `window + 30` across `DESIGN-v2.md` and
 `README.md` returns nothing, so it was never carried out.
 
+**Partially already true, rest resolved 2026-09-05.** `DESIGN-v2.md` decision 7 already
+states the compounded bound in prose ("the complaint window plus 30 days, up to 60") — the
+grep above missed it only because that sentence doesn't end in the literal word "days" after
+"60". Decision 7 is a recorded historical decision and was left as-is. `README.md`'s
+Instructions section, which flatly said `expire_dispute` "frees the seller after 30 days"
+with no caveat, is the one place the fix was genuinely missing; it now states the same
+compounded bound.
+
 ## A5 — `CLAUDE.md` describes the fifth cross-phase bug backwards
 
 `CLAUDE.md` says `closable_after` "was derived from the *live* permit's own
@@ -231,16 +257,98 @@ code used `MAX_COMPLAINT_WINDOW_SECONDS` flat. Confirmed on chain: the 2026-08-2
 stored `closable_after` is ~30 days after issuance, not one CashDesk complaint window.
 Check whether `DESIGN-v2.md` repeats the same error.
 
+**RESOLVED 2026-09-05.** `DESIGN-v2.md` did repeat it, in the grandfathering entry under
+"Honest limitations" (and in the account-model state table's formula for `closable_after`).
+Both fixed alongside `CLAUDE.md`, all three now stating the pre-fix behaviour as "the
+protocol ceiling `MAX_COMPLAINT_WINDOW_SECONDS` flat, rather than the live permit's own
+(possibly wider, grandfathered) `complaint_window`" and the fix as `max(permit.complaint_window,
+MAX_COMPLAINT_WINDOW_SECONDS)`.
+
 ## A6 — `README.md`'s IDL section does not mention the upload is blocked
 
 It gives `anchor idl upgrade` as a routine post-deploy step. `CLAUDE.md` records that this
 has failed on every attempt since 2026-08-31 and that the published IDL is the 2026-08-24
 one. A reader following the README will hit an opaque failure with no warning.
 
+**RESOLVED 2026-09-05.** README's IDL section now warns the command has failed on every
+attempt since 2026-08-31 and states that the published 2026-08-24 IDL is safe to keep using
+in the meantime, and why.
+
+## A7 — `CLAUDE.md`'s "The v2 rebuild" devnet-state description was stale
+
+Written when the demo had produced "two marketplaces, one stake, two permits and one
+resolved dispute." `getProgramAccounts` against the program ID, decoded 2026-09-05, shows 3
+`Marketplace`s (CashDesk 2-day/1,000 bps, PixelBazaar 7-day/300 bps, SwiftMarket 30-day/0
+bps), 2 `SellerStake`s, 4 `SlashPermit`s and 3 `DisputeRecord`s (1 upheld, 1 rejected, 1
+open) — 12 accounts, plus the one live `Config` and two unreadable v1-era leftovers (41-byte
+`Config`, 53-byte `SellerStake`, sizes confirmed against `git show
+52ae454:programs/truststake/src/state.rs`), for **15 accounts total**. See the "Chores"
+section above, corrected to match.
+
+**RESOLVED 2026-09-05.** `CLAUDE.md` now states this inventory directly.
+
+## A8 — `CLAUDE.md`'s "Current state" section carried no demo-progress summary
+
+A reader had to piece together stage completion from the "Real devnet demo" bullet's prose.
+Stages 1-3 are done (2026-08-31, 2026-09-01, 2026-09-03 at slot 492481349 respectively),
+putting 17 of 19 handlers through a real devnet transaction; only `expire_dispute` and
+`close_dispute` remain, across three `DisputeRecord`s clearing on 2026-09-23 and 2026-09-30.
+
+**RESOLVED 2026-09-05.** Added as a **Demo** bullet in "Current state."
+
+## A9 — `DESIGN-v2.md` line ~955 undercounted the demo marketplaces
+
+Said "demo marketplaces at 2 and 7" days; a third (SwiftMarket, 30 days) has existed on
+devnet since stage 1 (2026-08-31).
+
+**RESOLVED 2026-09-05.** Now reads "2, 7 and 30 (the third also at the 0 bps end of the
+legal bond range)."
+
+## A10 — `DESIGN-v2.md` decision 14 and line ~1007 read as contradicted by the same fact
+
+Decision 14 says "demo two marketplaces... three would be noise," and the later changelog
+entry repeats it. Both are recorded historical judgements, not left as an unexplained
+contradiction with A9's fix.
+
+**RESOLVED 2026-09-05** — not by rewriting either, which the task rules this file follows
+forbid, but by a dated note after decision 14's table, in this document's own
+`*Note, 2026-08-25: ...*` style, explaining that the third marketplace was added later for
+its settings (the 0 bps and 30-day bounds), not as a second attempt at the portability
+argument decision 14 already won with two.
+
+## A11 — `CLAUDE.md`'s "Real devnet demo" bullet contradicted itself
+
+Opened with "every step, old and new, checks live chain state before acting," then, a few
+sentences later in the same bullet, described the 2026-09-03 fix that replaced exactly that
+approach with `progress.json` flags and destroy-proof chain facts (`docs/DEMO-SCRIPT-FINDINGS.md`).
+
+**RESOLVED 2026-09-05.** The opening claim now says "is idempotency-guarded," consistent
+with what follows; also added: `--stage N` is no longer required for safety since that fix,
+only as a convenience.
+
+## A12 — `docs/TESTING.md`'s four-stage section was empty of results
+
+Three of four stages have run for real since it was written; every row still read `_pending_`.
+
+**RESOLVED 2026-09-05.** Filled in with the real signatures for stages 1-3 (23 transactions,
+every one cross-checked programmatically against `getTransaction` for a matching instruction
+name and `err: None` before being written down), converted from the pending table to the
+prose-plus-Explorer-link pattern `docs/TESTING.md` already uses at "What the devnet run
+proved," since a table cell holding six transactions (step 1.11) does not render usefully.
+**The heading's "11 handlers" was checked, not changed** — 19 total minus the 8 the original
+walk already covered is 11, and all eleven are confirmed exercised across the four stages;
+it was correct.
+
+## A13 — TS-33's fix was genuinely missing from `README.md`, already present in `DESIGN-v2.md`
+
+Same underlying finding as A4, filed separately in this task's second sweep before the two
+were recognised as one. See A4's resolution above for what was actually true in each file.
+
 ## Checked and accurate
 
 `docs/AUDIT-v2-FINDINGS.md` and `docs/IMPLEMENTATION-FINDINGS.md` are both correct and
 properly dated. TS-31 is marked resolved and the code matches (`require_gte!` in
 `add_stake.rs` and `withdraw_stake.rs`). TS-32's fix was deliberately declined and
-`CLAUDE.md` records why. Nothing in the seven documents contradicts anything else, apart from
-the counts above.
+`CLAUDE.md` records why. All thirteen findings above (A1-A13) are resolved as of 2026-09-05;
+each entry's own resolution note says what changed and, where a location turned out to
+already be correct, says that instead of changing it.

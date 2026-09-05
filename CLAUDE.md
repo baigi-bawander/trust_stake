@@ -23,6 +23,14 @@ Staked reputation for peer-to-peer marketplaces on Solana. Full pitch, architect
 - **Tests:** `main` has 152 tests passing (`cargo test` from `programs/truststake/`, LiteSVM),
   plus a real devnet run with every signature recorded in
   [docs/TESTING.md](docs/TESTING.md).
+- **Demo:** the four-stage devnet walk (`examples/devnet_demo.rs`, see "Real devnet demo"
+  below) has completed stages 1-3 — stage 1 on 2026-08-31, stage 2 on 2026-09-01, stage 3 on
+  2026-09-03 (slot 492481349) — putting 17 of the 19 handlers through a real transaction on
+  devnet. Only `expire_dispute` and `close_dispute` remain, across three `DisputeRecord`s:
+  the original CashDesk dispute from the Step 7 walk clears for `close_dispute` on
+  2026-09-23, and the SwiftMarket dispute (`expire_dispute`) and CashDesk's second dispute
+  (`close_dispute`) both clear on 2026-09-30. `docs/TESTING.md`'s four-stage section has the
+  signatures.
 - **Repo:** `https://github.com/baigi-bawander/trust_stake`
 - **Upgrade authority / admin wallet:** `~/.config/solana/id.json` (pubkey
   `EE4skmuEcaL4ybktFhp7sUfr84to78KQKoNsAAu8L7jG`) is simultaneously the program's upgrade
@@ -47,10 +55,16 @@ prototype with a multi-tenant protocol (SPL-token collateral, unstaking, no sing
 `docs/DESIGN-v2.md` has the full design rationale and build order behind that rebuild.
 
 **v2 is deployed to devnet**, at the program ID above. `Config` is initialized (chain_id 1, a
-demo-created 6-decimal test mint), and two marketplaces, one stake, two permits and one
-resolved dispute exist as real state from `examples/devnet_demo.rs`. This is still devnet, not
-mainnet: a change that breaks an account layout means a fresh deploy and a fresh demo run, not
-a production migration.
+demo-created 6-decimal test mint), and `examples/devnet_demo.rs` has since built up real state
+across three marketplaces (CashDesk, 2-day window/1,000 bps; PixelBazaar, 7-day/300 bps;
+SwiftMarket, 30-day/0 bps), two `SellerStake`s, four `SlashPermit`s, and three
+`DisputeRecord`s (one upheld, one rejected, one still open). `getProgramAccounts` against the
+program ID returns 15 accounts in total: those twelve, the one live `Config`, and two
+unreadable v1-era leftovers — a 41-byte `Config` and a 53-byte `SellerStake`, sized to match
+the v1 structs at `git show 52ae454:programs/truststake/src/state.rs` — that the in-place
+upgrade left behind and that can never be closed, since the v1 code that owned them no longer
+exists at this address. This is still devnet, not mainnet: a change that breaks an account
+layout means a fresh deploy and a fresh demo run, not a production migration.
 
 **Build and test:** `anchor build`, then `OPENSSL_NO_VENDOR=1 cargo test` from
 `programs/truststake/`. The env var is required in this environment; without it the vendored
@@ -109,9 +123,10 @@ clock-skew tolerance `raise_dispute`'s check 7 depends on, fixed by requiring
 constant since the two are one guarantee split across two handlers.
 
 A fifth has since turned up: `closable_after`, the field that lets `close_dispute` reclaim a
-`DisputeRecord`'s rent, was derived from the *live* permit's own `complaint_window` rather
-than the protocol ceiling, so a marketplace grandfathered onto a window wider than the
-current `MAX_COMPLAINT_WINDOW_SECONDS` (see docs/DESIGN-v2.md's grandfathering entry) could
+`DisputeRecord`'s rent, was derived from the protocol ceiling `MAX_COMPLAINT_WINDOW_SECONDS`
+flat, rather than the live permit's own (possibly wider, grandfathered) `complaint_window`, so
+a marketplace grandfathered onto a window wider than the current `MAX_COMPLAINT_WINDOW_SECONDS`
+(see docs/DESIGN-v2.md's grandfathering entry) could
 have its `DisputeRecord` closed by anyone before that marketplace's own longer window had
 elapsed, freeing the PDA for the same still-valid receipt to be filed again and the same
 order slashed twice — fixed by deriving `closable_after` from
@@ -196,7 +211,7 @@ See `docs/DESIGN-v2.md`, "What this design deliberately does not do" and "Honest
   revision and are random rather than the fixed strings an earlier task briefing assumed; new
   disputes' `order_id`s; revocation timestamps), live in
   `programs/truststake/examples/.devnet-demo-state/progress.json` (gitignored, alongside the
-  existing `.devnet-demo-keypairs/`). Every step, old and new, checks live chain state before
+  existing `.devnet-demo-keypairs/`). Every step, old and new, is idempotency-guarded before
   acting — including the original eight steps, which turned out not to be as idempotent as they
   looked: `initialize_stake`/`grant_permit`/`register_marketplace` all use Anchor's `init`, which
   hard-errors on a second call, and `raise_dispute`'s `order_id` was fresh-random every run, so a
@@ -210,7 +225,9 @@ See `docs/DESIGN-v2.md`, "What this design deliberately does not do" and "Honest
   bug the program itself had already fixed in `SlashPermit.granted_at`: inferring "already done"
   from live chain state that a *later* step of the same script can destroy or decrease. Those
   guard decisions are now pure functions with their own `#[cfg(test)] mod tests` inside
-  `devnet_demo.rs`, run via the command in "Build and test" above.
+  `devnet_demo.rs`, run via the command in "Build and test" above. As of that fix, the plain
+  command is safe to re-run: `--stage N` is no longer needed as a safety measure, only as a
+  convenience to force one stage on or off its normal schedule.
 - **Build:** `anchor build` (not plain `cargo build` — Solana programs need the SBF target, which `anchor build` invokes via `cargo build-sbf`). `target/deploy/truststake-keypair.json`
   (pubkey `G8B59KZpf7siepeb3PRX3KuPk4LC1LZarF8YmuPHGUZ`, confirmed with `solana-keygen pubkey`)
   does not match `declare_id!` in `src/lib.rs` or either `[programs.*]` entry in `Anchor.toml`

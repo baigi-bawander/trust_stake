@@ -85,8 +85,10 @@ marketplace, stake, permit, dispute.
   verified by the Ed25519 precompile in the same transaction rather than by
   the program trusting a bare claim: `raise_dispute`. That marketplace's own
   arbiter decides it: `resolve_dispute`. If nobody decides, `expire_dispute`
-  frees the seller after 30 days; once a decided dispute's receipt is too old
-  to reuse, `close_dispute` reclaims its rent.
+  frees the seller 30 days after the complaint is filed — as late as the
+  complaint window plus 30 days (up to 60) after the order itself, since a
+  receipt stays filable for the whole window; once a decided dispute's
+  receipt is too old to reuse, `close_dispute` reclaims its rent.
 
 Collateral lives in a separate token vault (`stake_vault`), not on the
 `SellerStake` account itself, so a slash only ever moves vault tokens and
@@ -98,7 +100,7 @@ never touches the account's own rent-exempt balance.
   instruction handler, the offchain receipt format, integration requirements for a
   marketplace, and the honest limitations. Read this before integrating a marketplace or
   questioning a design decision above.
-- [`docs/TESTING.md`](docs/TESTING.md) — the test plan behind the 132-test suite, plus the
+- [`docs/TESTING.md`](docs/TESTING.md) — the test plan behind the 152-test suite, plus the
   live devnet transaction signatures proving it runs onchain and not only in LiteSVM. Read
   this before adding a test or trusting a "this should already be covered" claim.
 - [`docs/SECURITY-CONTEXT.md`](docs/SECURITY-CONTEXT.md) — architectural reconnaissance
@@ -126,14 +128,16 @@ program natively, so a handler change needs a rebuild before the tests see
 it. `OPENSSL_NO_VENDOR=1` works around a vendored-OpenSSL build failure on a
 clock-skew check in this environment.
 
-132 tests run against [LiteSVM](https://github.com/LiteSVM/litesvm) in-process, organized
+152 tests run against [LiteSVM](https://github.com/LiteSVM/litesvm) in-process, organized
 by who's attacking: a malicious seller trying to withdraw committed collateral or evade a
 slash, a malicious buyer forging or replaying a receipt, a malicious marketplace trying to
 exceed its own permit or freeze a seller forever, an outsider attempting PDA substitution,
 and the Ed25519 signature-introspection check itself (the single most exploitable surface in
 the design). A shared invariant check runs after every instruction handler in every test —
 vault balances match their ledgers, `committed <= staked` always holds, and no collateral is
-created or destroyed anywhere in the suite.
+created or destroyed anywhere in the suite. A separate 28-test suite,
+`OPENSSL_NO_VENDOR=1 cargo test --example devnet_demo --features devnet_demo`, covers the
+devnet demo script's own idempotency-guard decisions instead of the program.
 
 v2 is deployed on devnet at `3Vc6M8Az9h2GtDmqqhQKURqTKKygNfekQq7PoJris6V2`; see
 [docs/TESTING.md](docs/TESTING.md) for the full test plan and the live devnet transaction
@@ -143,10 +147,17 @@ signatures proving it runs onchain, not only in LiteSVM.
 
 ```bash
 solana config set --url devnet
-anchor deploy
+solana program deploy --program-id 3Vc6M8Az9h2GtDmqqhQKURqTKKygNfekQq7PoJris6V2 \
+  target/deploy/truststake.so
 ```
 
-`anchor deploy` fails if the new binary no longer fits the program account's current
+Never `anchor deploy` — it defaults to `--program-keypair target/deploy/truststake-keypair.json`,
+which deploys a brand-new program at a different address and spends devnet SOL without
+touching the program actually live at the address above. The command shown upgrades that
+program in place, authorised by `--upgrade-authority` (defaults to the configured keypair,
+`solana config get`).
+
+The upgrade fails if the new binary no longer fits the program account's current
 allocation. Compare the size of `target/deploy/truststake.so` against the `Data Length`
 reported by `solana program show <program-id> --url devnet`; if the binary is larger, extend
 the account by the difference first, with headroom so the next build doesn't need this again:
@@ -169,7 +180,14 @@ anchor idl upgrade 3Vc6M8Az9h2GtDmqqhQKURqTKKygNfekQq7PoJris6V2 \
 ```
 
 Never `anchor idl init` — the IDL account already exists, and `init` fails against an account
-that's already allocated.
+that's already allocated. **This upgrade command has failed on every attempt since
+2026-08-31**: the public devnet RPC has silently truncated the uploaded buffer rather than
+rejecting it outright, three times in a row (see CLAUDE.md's IDL entry for the full
+diagnosis and the abandoned buffers it left behind). The IDL currently published dates from
+2026-08-24 and is safe to keep using in the meantime — verified by fetching and decompressing
+it and diffing against `target/idl/truststake.json`: every instruction, account and shared
+error code matches, and it differs only by lacking names for two error codes added since and
+one stale doc string, none of which changes how anything decodes.
 
 ## Current tradeoffs
 
@@ -185,6 +203,8 @@ each:
   history is computed from onchain events instead of stored in an account.
 - **No KYC or identity data, ever.** Everything written to Solana is public and permanent;
   that verification stays inside a marketplace's own systems.
+- **No leverage multiplier.** Backing above a seller's collateral is only safe once
+  reputation is expensive to fabricate, which it is not yet.
 - **A permit caps total damage across every buyer on one marketplace, not per-buyer
   coverage.** Keeping order volume in line with a seller's live permit is the marketplace's
   job, published as an integration requirement.

@@ -482,51 +482,75 @@ script. Both are exercised in `tests/test_phase2.rs` instead.
 
 ---
 
-## What the four-stage run proves (the remaining 11 handlers)
+## What the four-stage run proves (11 handlers beyond the walk above)
 
 `examples/devnet_demo.rs` was extended to reach every handler Step 7 above does not, across four
 wall-clock-gated stages -- see that file's own module doc comment for the full design and
 CLAUDE.md's "Real devnet demo" bullet for how the staging and resumability work.
 `tests/test_devnet_demo_parity.rs` proves this entire sequence, both directions of every
-boundary, against LiteSVM first; this table is the record of the real devnet run, filled in as
-each stage is actually executed. **Do not invent a signature here** -- add a row only after
-running that stage for real and confirming it with `solana confirm -v <signature>`.
+boundary, against LiteSVM first. Eleven is the right count: 19 handlers total, minus the 8 the
+walk above already proved onchain (`initialize_config`, `register_marketplace`,
+`initialize_stake`, `add_stake`, `withdraw_stake`, `grant_permit`, `raise_dispute`,
+`resolve_dispute`), leaves `propose_config_authority`, `accept_config_authority`,
+`update_marketplace`, `propose_marketplace_authority`, `accept_marketplace_authority`,
+`increase_permit`, `revoke_permit`, `release_permit`, `release_permit_early`,
+`expire_dispute` and `close_dispute` -- eleven, all reached below. Stages 1-3 have now run for
+real; stage 4 is gated on 2026-09-23 and 2026-09-30 (CLAUDE.md's "Current state"). **Do not
+invent a signature below** -- add one only after running that stage for real and confirming it
+with `solana confirm -v <signature>`.
 
-### Stage 1 (immediate)
+### Stage 1 (ran 2026-08-31, 20:07:33-20:08:37 UTC)
 
-| Step | Handler(s) | Signature | Explorer |
-| --- | --- | --- | --- |
-| 1.1 | `propose_config_authority` ×2, `accept_config_authority` ×2 | _pending_ | |
-| 1.2 | `register_marketplace` (SwiftMarket) | _pending_ | |
-| 1.3 | `update_marketplace` (PixelBazaar bond) | _pending_ | |
-| 1.4 | `update_marketplace` (CashDesk receipt signer) | _pending_ | |
-| 1.5 | `propose_marketplace_authority`, `accept_marketplace_authority` | _pending_ | |
-| 1.6 | `add_stake` (top-up) | _pending_ | |
-| 1.7 | `grant_permit` (SwiftMarket) | _pending_ | |
-| 1.8 | `increase_permit` (SwiftMarket) | _pending_ | |
-| 1.9 | `raise_dispute` (SwiftMarket, left open) | _pending_ | |
-| 1.10 | `raise_dispute` + `resolve_dispute(upheld = false)` (CashDesk, second) | _pending_ | |
-| 1.11 | `initialize_stake`, `add_stake`, `grant_permit` ×2, `revoke_permit` ×2 (seller B) | _pending_ | |
+Config authority moves off `INITIAL_ADMIN`, and back:
 
-### Stage 2 (due 1 hour after 1.11's revocation)
+- `propose_config_authority`: `5o5sT1YWVuYVzpvMqydzp83KPHhNQsvnAiRtaTq8T3phKArET9JJYNH4TjrGao59tVXhFrj1FdYPXjDsdjq8XNwu` -- [Explorer](https://explorer.solana.com/tx/5o5sT1YWVuYVzpvMqydzp83KPHhNQsvnAiRtaTq8T3phKArET9JJYNH4TjrGao59tVXhFrj1FdYPXjDsdjq8XNwu?cluster=devnet)
+- `accept_config_authority`: `cDwBHbtn9iB8xqhwmWkg9z2WmL9m1V9ikhysH3YtyHsUk1HNko7H1rMtfZUhtMeNV8PScZmtwWw4mSZ49MQXUcp` -- [Explorer](https://explorer.solana.com/tx/cDwBHbtn9iB8xqhwmWkg9z2WmL9m1V9ikhysH3YtyHsUk1HNko7H1rMtfZUhtMeNV8PScZmtwWw4mSZ49MQXUcp?cluster=devnet)
+- `propose_config_authority` (back): `5YXjwSpjpPJayY5isnpo2uv4tcTSyQxwTXPrUXwucsrWxJfAohRp2LKTFN8DTqoDmwcvviA5exw18Z9DXVnzLd6k` -- [Explorer](https://explorer.solana.com/tx/5YXjwSpjpPJayY5isnpo2uv4tcTSyQxwTXPrUXwucsrWxJfAohRp2LKTFN8DTqoDmwcvviA5exw18Z9DXVnzLd6k?cluster=devnet)
+- `accept_config_authority` (back): `2zwows3BPLfjgbBba5pQwkbg6GmJhZWo1G3jfSnyLkZQb7RJ5B6QypDZUvzKDZi5RfjCbGH3MATGuMnp7ESsrBkt` -- [Explorer](https://explorer.solana.com/tx/2zwows3BPLfjgbBba5pQwkbg6GmJhZWo1G3jfSnyLkZQb7RJ5B6QypDZUvzKDZi5RfjCbGH3MATGuMnp7ESsrBkt?cluster=devnet). The round trip proves both the propose/accept two-step and that `INITIAL_ADMIN` still ends up in control.
 
-| Step | Handler(s) | Signature | Explorer |
-| --- | --- | --- | --- |
-| 2.1 | `release_permit_early` (seller B × PixelBazaar) | _pending_ | |
+A third marketplace registers at the far end of the legal range, and two existing ones change settings live:
 
-### Stage 3 (due 2 days after 1.11's revocation)
+- `register_marketplace(SwiftMarket, window = 30 days, bond = 0 bps)`: `47NtpTZAUZHbofXU4hQM8jrvBifMys2xseuwoN7zty12VUnCFd2zf5WPR3cUzgnGYWgwckWihdnR8ceK69QJb6To` -- [Explorer](https://explorer.solana.com/tx/47NtpTZAUZHbofXU4hQM8jrvBifMys2xseuwoN7zty12VUnCFd2zf5WPR3cUzgnGYWgwckWihdnR8ceK69QJb6To?cluster=devnet). Confirmed live: `getProgramAccounts` decodes this marketplace's `complaint_window` as 2,592,000 seconds and `bond_bps` as 0.
+- `update_marketplace(PixelBazaar, bond_bps -> 300)`: `2Q9S8NRAPiVAjqYxSu86gXWo2nD98Q2FB1WapY1eGgo1S3mSFqMeZCwALi9BC9EgRL6RuYGKsWt25q2p3aBfnJ8j` -- [Explorer](https://explorer.solana.com/tx/2Q9S8NRAPiVAjqYxSu86gXWo2nD98Q2FB1WapY1eGgo1S3mSFqMeZCwALi9BC9EgRL6RuYGKsWt25q2p3aBfnJ8j?cluster=devnet)
+- `update_marketplace(CashDesk, receipt_signer rotated)`: `4L8bNWNR2cGQVE8D2awrzy3xzzevP7XtuVQrmjxttm1WstpqCnjps8Fsy7LSxMcqdzTBTDJ4CtLNHMm2tLXnbt4A` -- [Explorer](https://explorer.solana.com/tx/4L8bNWNR2cGQVE8D2awrzy3xzzevP7XtuVQrmjxttm1WstpqCnjps8Fsy7LSxMcqdzTBTDJ4CtLNHMm2tLXnbt4A?cluster=devnet). Sets up 1.10's proof that the previous signer still verifies inside its grace period.
+- `propose_marketplace_authority` + `accept_marketplace_authority` (SwiftMarket): `3UhjacB2mjTPwAShcBatMUWJoVaJobAfgo6wr1mHFPQi7Y3MRdFcBGGb8av8zDAD5187qsppXPTh6ACcM4UVS84J` -- [Explorer](https://explorer.solana.com/tx/3UhjacB2mjTPwAShcBatMUWJoVaJobAfgo6wr1mHFPQi7Y3MRdFcBGGb8av8zDAD5187qsppXPTh6ACcM4UVS84J?cluster=devnet), `5fG4GXqxW3TbYxpvdtQc2a3dcZ4P84o5q38WVtdMmQA8ugnrTWie5UA1TJKBUQ6akocJW2xMRz1XMw7BqwVn77sb` -- [Explorer](https://explorer.solana.com/tx/5fG4GXqxW3TbYxpvdtQc2a3dcZ4P84o5q38WVtdMmQA8ugnrTWie5UA1TJKBUQ6akocJW2xMRz1XMw7BqwVn77sb?cluster=devnet). Same two-step proof as config authority, this time on a marketplace.
 
-| Step | Handler(s) | Signature | Explorer |
-| --- | --- | --- | --- |
-| 3.1 | `release_permit` (seller B × CashDesk) | _pending_ | |
+The original seller tops up its free collateral, then draws a third permit:
 
-### Stage 4 (due 30 days after stage 1)
+- `add_stake` (top-up to $200 free collateral): `2bY3wzuFeX3Z8kn7WG9uRVur3DkSmwp9Qe23AwYjjV9bFek1L797fY4AMY5af11dwdsRcJsddMqg7rod5zMnN3gM` -- [Explorer](https://explorer.solana.com/tx/2bY3wzuFeX3Z8kn7WG9uRVur3DkSmwp9Qe23AwYjjV9bFek1L797fY4AMY5af11dwdsRcJsddMqg7rod5zMnN3gM?cluster=devnet)
+- `grant_permit(SwiftMarket, $100)`: `51Xsy9Pjpq5jhTVKdtQZng9xvcAoTAQvZySYzu1TbmNgLgQtAGJ7sPXFPvHAkwUSg7Vr97BhrfgAscfyp9TqaB4D` -- [Explorer](https://explorer.solana.com/tx/51Xsy9Pjpq5jhTVKdtQZng9xvcAoTAQvZySYzu1TbmNgLgQtAGJ7sPXFPvHAkwUSg7Vr97BhrfgAscfyp9TqaB4D?cluster=devnet)
+- `increase_permit(SwiftMarket, +$50)`: `zt6yqnDtDc8vwrtzaRsAAbmGrFzPQauvJ1P2K5aaxb2N2uMstr28Uf1Fo3cfrFZXaLHLU6E8GUtLjHNhYy1sdLU` -- [Explorer](https://explorer.solana.com/tx/zt6yqnDtDc8vwrtzaRsAAbmGrFzPQauvJ1P2K5aaxb2N2uMstr28Uf1Fo3cfrFZXaLHLU6E8GUtLjHNhYy1sdLU?cluster=devnet). Confirmed live: the resulting `SlashPermit` carries `max_slashable = 150.000000`, exactly grant plus increase.
 
-| Step | Handler(s) | Signature | Explorer |
-| --- | --- | --- | --- |
-| 4.1 | `expire_dispute` (SwiftMarket dispute from 1.9) | _pending_ | |
-| 4.2 | `close_dispute` (CashDesk second dispute from 1.10) | _pending_ | |
-| 4.2 | `close_dispute` (original CashDesk dispute from the Step 7 run above) | _pending_ | |
+Two more disputes -- one left deliberately open, one testing the signer rotation above:
+
+- `raise_dispute(SwiftMarket, order $80, claim $40)`, left open: `3rD6iKTiD36X9N8pi3qJmjFyJKPYpEAq7qNdDHyLuksNQuMVJFpCMRwnNT4cTR3KKcvfD6PKF7VSdVHVExyFsD77` -- [Explorer](https://explorer.solana.com/tx/3rD6iKTiD36X9N8pi3qJmjFyJKPYpEAq7qNdDHyLuksNQuMVJFpCMRwnNT4cTR3KKcvfD6PKF7VSdVHVExyFsD77?cluster=devnet). SwiftMarket's bond is 0 bps, so this is the first live proof that a legal zero bond is accepted end to end. Confirmed still open: the `DisputeRecord` reads `status = Open`, `bond = 0`.
+- `raise_dispute(CashDesk, order $60, claim $25)`, receipt backdated 60 seconds before the 1.4 rotation: `5S3rDecDbg7TkvAs7qJosi6WDovZrwo1CpanW8ZxjPqW3iLidS9K1yAXeNU52yNzAEhydNfhKQuS3B1dbicH4sBZ` -- [Explorer](https://explorer.solana.com/tx/5S3rDecDbg7TkvAs7qJosi6WDovZrwo1CpanW8ZxjPqW3iLidS9K1yAXeNU52yNzAEhydNfhKQuS3B1dbicH4sBZ?cluster=devnet), then `resolve_dispute(upheld = false)`: `4Bsy5ZuS2JoKnNqYdPfmxnKLJZNENpvnF6SFmZb4zWaf6gBW7d5TPWaBkSTpTesAhJBpnVAmCVTZf6ctYEY7LUWr` -- [Explorer](https://explorer.solana.com/tx/4Bsy5ZuS2JoKnNqYdPfmxnKLJZNENpvnF6SFmZb4zWaf6gBW7d5TPWaBkSTpTesAhJBpnVAmCVTZf6ctYEY7LUWr?cluster=devnet). Live proof that a receipt signed before `signer_rotated_at` still verifies (`test_signer_rotation_preserves_old_receipts`'s claim, onchain). Rejected forfeits the bond to the seller; confirmed live, the `DisputeRecord` reads `status = Rejected`, `bond = 2.500000`.
+
+A second seller stakes, grants two permits, and revokes both -- the first live use of `revoke_permit`, and it leaves the original seller's already-slashed history untouched:
+
+- `initialize_stake(seller_b)`: `3ssAx92u2YXsZoQbq9aANT7ompAPSwkq4PyLFExWinihbB1cYZdNcQZhApshRvW1e3f41kMCwJUi15emF3PYzftE` -- [Explorer](https://explorer.solana.com/tx/3ssAx92u2YXsZoQbq9aANT7ompAPSwkq4PyLFExWinihbB1cYZdNcQZhApshRvW1e3f41kMCwJUi15emF3PYzftE?cluster=devnet)
+- `add_stake(seller_b, $100)`: `31WRx2LRokJo41NnG7ka9j3yfLR8ugPK9yDqyHAV6owe4BmPwdsdPBUdh7ER7pEqeWmyBEf5JkGWK9nf3vF9GWcm` -- [Explorer](https://explorer.solana.com/tx/31WRx2LRokJo41NnG7ka9j3yfLR8ugPK9yDqyHAV6owe4BmPwdsdPBUdh7ER7pEqeWmyBEf5JkGWK9nf3vF9GWcm?cluster=devnet)
+- `grant_permit(seller_b x CashDesk, $50)`: `GqYWXrJCmVxZC2X2vvoEjp4SpkoKX4jo3dGeCoWiAxuu9RSCdVCYNSTwnfrSwkrUTKe7cpJmkbaC9jigTbnSccq` -- [Explorer](https://explorer.solana.com/tx/GqYWXrJCmVxZC2X2vvoEjp4SpkoKX4jo3dGeCoWiAxuu9RSCdVCYNSTwnfrSwkrUTKe7cpJmkbaC9jigTbnSccq?cluster=devnet)
+- `grant_permit(seller_b x PixelBazaar, $50)`: `5zYAYsSPXBovE5q5S8Tb17JPr9cbFe8yfaT9p7BSqLpaTDcRRW2nHt8mAgb7DEFrme2B5ZTB2DEKNuKz5MeQVAX3` -- [Explorer](https://explorer.solana.com/tx/5zYAYsSPXBovE5q5S8Tb17JPr9cbFe8yfaT9p7BSqLpaTDcRRW2nHt8mAgb7DEFrme2B5ZTB2DEKNuKz5MeQVAX3?cluster=devnet)
+- `revoke_permit(seller_b x CashDesk)`: `KBFRhYRuaHeMxKU3wVXtbe6rmSAY6y2QWnHF81HyP7eETGehP9BaYgAeCaZDJyHGhXSSMaw2zCXXL6KqRfcd7fC` -- [Explorer](https://explorer.solana.com/tx/KBFRhYRuaHeMxKU3wVXtbe6rmSAY6y2QWnHF81HyP7eETGehP9BaYgAeCaZDJyHGhXSSMaw2zCXXL6KqRfcd7fC?cluster=devnet), stamping `revoked_at = 1788206915` -- stage 3's target.
+- `revoke_permit(seller_b x PixelBazaar)`: `25hxgt56DGriVmam8j41usUeERs47FkA5W5BPyfj4HpDKXhAMiy5PLRm2DVMwQfhY3924k7uVvCqUqVd1WCU3N5D` -- [Explorer](https://explorer.solana.com/tx/25hxgt56DGriVmam8j41usUeERs47FkA5W5BPyfj4HpDKXhAMiy5PLRm2DVMwQfhY3924k7uVvCqUqVd1WCU3N5D?cluster=devnet), stamping `revoked_at = 1788206917` -- stage 2's target.
+
+### Stage 2 (ran 2026-09-01, due 1 hour after 1.11's PixelBazaar revocation)
+
+- `release_permit_early(seller_b x PixelBazaar)`: `5cecMAYGT2wSKtiAHoY11JRQLgcGeyS7yas3F42Bz4k8A4ydA2PPgQoBjLmeYRqGcJEHZEoxYhUtQuUMz29AurfM` -- [Explorer](https://explorer.solana.com/tx/5cecMAYGT2wSKtiAHoY11JRQLgcGeyS7yas3F42Bz4k8A4ydA2PPgQoBjLmeYRqGcJEHZEoxYhUtQuUMz29AurfM?cluster=devnet). The cooperative fast path, live: seller and marketplace authority co-sign, and the permit closes roughly 12.2 hours after revocation -- past the one-hour `CLOCK_SKEW_TOLERANCE_SECONDS` floor, nowhere near PixelBazaar's 7-day ordinary window -- refunding its rent to seller_b.
+
+### Stage 3 (ran 2026-09-03, slot 492481349, via `--stage 3`)
+
+- `release_permit(seller_b x CashDesk)`: `29YNKJG63FFMEpw1dGVKtERJmYEgNmCwx9BffSV8YWMFuNsKa86cu2K9SbB78n14o7DmCeGYNdCxgjxmNTTzMh37` -- [Explorer](https://explorer.solana.com/tx/29YNKJG63FFMEpw1dGVKtERJmYEgNmCwx9BffSV8YWMFuNsKa86cu2K9SbB78n14o7DmCeGYNdCxgjxmNTTzMh37?cluster=devnet). The ordinary path, live: `now >= revoked_at + complaint_window` (CashDesk's 2-day window) holds and `open_disputes == 0`, so the permit closes and its rent returns to seller_b. Run explicitly via `--stage 3`, after a plain run earlier the same day hit the guard bug `docs/DEMO-SCRIPT-FINDINGS.md` calls D1 (fixed since, commit `48dbbf1`) and exited before reaching this stage.
+
+### Stage 4 (not yet run, due 2026-09-23 and 2026-09-30)
+
+`close_dispute` needs the original CashDesk dispute from the Step 7 walk above to clear its
+`closable_after` mark, due 2026-09-23. `expire_dispute` needs the SwiftMarket dispute from 1.9
+to sit undecided 30 days past filing, and `close_dispute` needs the CashDesk second dispute
+from 1.10 to clear its own `closable_after` mark -- both due 2026-09-30. **Do not invent a
+signature here** -- add one only after running that stage for real and confirming it with
+`solana confirm -v <signature>`.
 
 ---
 
