@@ -65,6 +65,17 @@ portability. A frontend is out of scope and is not part of this document's deliv
 | 13 | **No daily slashing cap, and no protocol revenue.** | A cap does not bound theft, it delays it: the thief writes the receipt, so the thief picks the amount, and a per-day limit costs them one day during which nobody has a lever to pull. Meanwhile it shortchanges the one honest buyer whose claim exceeds the daily allowance. Every payout already emits an event, so the cap adds no detection either. Taking a cut of forfeited bonds was rejected on the same principle: the position worth protecting is that this program ships rules and never decides where anyone's money goes. |
 | 14 | **Build the whole architecture; demo two marketplaces.** | Portability is the differentiator, and a single-marketplace demo cannot show it: what a reviewer sees is a seller deposit system, which Binance has had for years. Two marketplaces are the minimum that demonstrates portability, permit-scoped freezing, and per-marketplace settings. Three would be noise. |
 
+*Note, 2026-09-05: a third marketplace, SwiftMarket, was added to the devnet demo on
+2026-08-31 (`examples/devnet_demo.rs` stage 1), registered at a 30-day window and a 0 bps
+bond -- the far end of the legal range in both dimensions, next to CashDesk's 2-day/1,000 bps
+and PixelBazaar's 7-day/300 bps. This does not overturn decision 14: portability was already
+demonstrated by two marketplaces sharing one stake, and a third adds nothing to that
+argument. What it does add is live coverage of `MAX_COMPLAINT_WINDOW_SECONDS` and the legal
+0 bps bond rate (CLAUDE.md's deliberate-tradeoffs entry on `bond_bps` having a ceiling but no
+floor), neither of which the original two marketplaces' settings reached. A third
+marketplace added for its settings, not for a third data point on portability, turned out not
+to be the noise decision 14 anticipated.*
+
 ---
 
 ## What this design deliberately does not do
@@ -257,16 +268,17 @@ Each of these is a decision with a reason, not an oversight.
   settings: `raise_dispute` check 7's own replay guard leaned on the same bound holding
   everywhere, not just at the marketplace that registered under it. `closable_after` is what
   lets `close_dispute` reclaim a `DisputeRecord`'s rent once a complaint window has genuinely
-  closed, and deriving it from the *live* permit's own `complaint_window` meant a
-  grandfathered marketplace running a window wider than the current
-  `MAX_COMPLAINT_WINDOW_SECONDS` could have its `DisputeRecord` closed -- `close_dispute` is
-  permissionless -- before that marketplace's own, longer window had actually elapsed. The
-  freed PDA let the same still-valid receipt be filed again, and the same order slashed
-  twice. This specific consequence is fixed: `closable_after` is now derived from
-  `max(permit.complaint_window, MAX_COMPLAINT_WINDOW_SECONDS)` rather than the permit's own
-  window alone, so a grandfathered marketplace's wider window can no longer outlive the
-  record that blocks its receipts from being replayed. The grandfathering itself is
-  untouched and stays deliberate, for the reasons above.
+  closed, and deriving it from the protocol ceiling `MAX_COMPLAINT_WINDOW_SECONDS` flat,
+  rather than the live permit's own (possibly wider, grandfathered) `complaint_window`, meant
+  a grandfathered marketplace running a window wider than that ceiling could have its
+  `DisputeRecord` closed -- `close_dispute` is permissionless -- before that marketplace's
+  own, longer window had actually elapsed. The freed PDA let the same still-valid receipt be
+  filed again, and the same order slashed twice. This specific consequence is fixed:
+  `closable_after` is now derived from `max(permit.complaint_window,
+  MAX_COMPLAINT_WINDOW_SECONDS)` rather than the flat ceiling alone, so a grandfathered
+  marketplace's wider window can no longer outlive the record that blocks its receipts from
+  being replayed. The grandfathering itself is untouched and stays deliberate, for the
+  reasons above.
 - **The bond percentage a grandfathered marketplace stores is clamped where the buyer is
   charged, not where the permit is granted.** `grant_permit` copies `bond_bps` onto the
   permit verbatim, for the grandfathering reason in the entry above; `raise_dispute` then
@@ -548,7 +560,8 @@ DisputeRecord             ["dispute", "v2", marketplace, seller, order_id]
   bond                    u64        the amount actually deposited, not recomputed later
   created_at              i64
   expires_at              i64        created_at + DISPUTE_EXPIRY (30 days), protocol constant
-  closable_after          i64        receipt.issued_at + permit.complaint_window
+  closable_after          i64        receipt.issued_at + max(permit.complaint_window,
+                                     MAX_COMPLAINT_WINDOW_SECONDS)
   status                  u8         Open=1 | Upheld=2 | Rejected=3 | Abandoned=4
   reserved                [u8; 32]
 ```
@@ -952,7 +965,8 @@ Then `cargo run --example devnet_demo` for real devnet signatures. The demo walk
   so authors can ship fixes; the claim worth making once that move happens is that the
   deployed rules cannot be bypassed, not that the code is frozen.
 - **Parameter defaults:** `bond_bps` 1000 (10%), protocol ceiling 2000 (20%);
-  `complaint_window` 2 to 30 days, demo marketplaces at 2 and 7; `DISPUTE_EXPIRY` 30 days,
+  `complaint_window` 2 to 30 days, demo marketplaces at 2, 7 and 30 (the third also at the
+  0 bps end of the legal bond range); `DISPUTE_EXPIRY` 30 days,
   fixed; no minimum stake.
 - **Mainnet needs legal advice first**, particularly for marketplaces trading crypto against
   local cash. Not because this program does anything different, but because of who its
