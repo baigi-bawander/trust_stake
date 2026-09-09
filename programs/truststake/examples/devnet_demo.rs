@@ -1189,7 +1189,7 @@ fn read_token_balance(client: &RpcClient, token_account: &Pubkey) -> Result<u64,
 /// `getTokenAccountsByOwner`, filtered server-side) and persists it, or
 /// creates and persists a new one if none exists. The persisted file is
 /// what makes every later invocation reuse the SAME token account rather
-/// than the on-chain scan being needed every time; the scan itself is what
+/// than the onchain scan being needed every time; the scan itself is what
 /// recovers the seller's and buyer's real token accounts from the
 /// 2026-08-24 run, which predates this persistence file existing at all
 /// (see the module doc comment's "Resumability" section).
@@ -2569,7 +2569,7 @@ fn ensure_revoked(
             println!(
                 "  {name}: a permit exists at this address but is unrevoked, while progress.json remembers \
                  an earlier revocation at this same PDA -- a previous run re-granted here after release \
-                 (docs/DEMO-SCRIPT-FINDINGS.md, item 8). Leaving it untouched."
+                 (docs/DEMO-SCRIPT-FINDINGS.md, D1). Leaving it untouched."
             );
             Ok(None)
         }
@@ -2623,7 +2623,7 @@ fn run_stage_2(chain: &Chain, progress: &mut Value, roster: &StageRoster) -> Res
             println!(
                 "  A permit exists at this address but is not revoked -- that's stage 1.11's job, not stage 2's. \
                  Treating stage 2 as already complete for this permit rather than acting on state it doesn't own \
-                 (docs/DEMO-SCRIPT-FINDINGS.md, item 8: a prior run's bug can leave exactly this shape)."
+                 (docs/DEMO-SCRIPT-FINDINGS.md, D1: a prior run's bug can leave exactly this shape)."
             );
             return Ok(());
         }
@@ -2707,7 +2707,7 @@ fn run_stage_3(chain: &Chain, progress: &mut Value, roster: &StageRoster) -> Res
             println!(
                 "  A permit exists at this address but is not revoked -- that's stage 1.11's job, not stage 3's. \
                  Treating stage 3 as already complete for this permit rather than acting on state it doesn't own \
-                 (docs/DEMO-SCRIPT-FINDINGS.md, item 8: a prior run's bug can leave exactly this shape)."
+                 (docs/DEMO-SCRIPT-FINDINGS.md, D1: a prior run's bug can leave exactly this shape)."
             );
             return Ok(());
         }

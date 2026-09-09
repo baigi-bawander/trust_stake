@@ -6,7 +6,7 @@ the suite's job is to prove that **the specific things that would let someone ge
 locked out cannot happen**.
 
 This file is the checklist. It maps to [DESIGN-v2.md](DESIGN-v2.md) for what the program is
-meant to do and to [AUDIT-v2-FINDINGS.md](AUDIT-v2-FINDINGS.md) for where each attack came
+meant to do and to [AUDIT.md](AUDIT.md) for where each attack came
 from. Every test named here should exist by the end of Phase 4, and each phase adds its own
 slice as it lands.
 
@@ -556,7 +556,7 @@ signature here** -- add one only after running that stage for real and confirmin
 
 ## Regression coverage against the audit
 
-Every critical and high finding from [AUDIT-v2-FINDINGS.md](AUDIT-v2-FINDINGS.md) needs a
+Every critical and high finding from [AUDIT.md](AUDIT.md) needs a
 named test that fails if the fix is ever removed. This table is the map. Keep it current
 when tests are renamed.
 

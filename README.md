@@ -107,13 +107,10 @@ never touches the account's own rent-exempt balance.
   written for whoever audits the program next: what each control defends against and where
   the weak spots are, without reporting findings of its own. Read this before starting a
   security review.
-- [`docs/AUDIT-v2-FINDINGS.md`](docs/AUDIT-v2-FINDINGS.md) — 57 findings from three
-  independent adversarial reviews of the design, run before any code was written. Read this
-  to see what a design-only review caught and why some of the account model exists.
-- [`docs/IMPLEMENTATION-FINDINGS.md`](docs/IMPLEMENTATION-FINDINGS.md) — findings from a
-  sharp-edge sweep over the built program, each one reproduced against the compiled program
-  rather than inferred from reading. Read this for what building the design turned up that
-  reviewing it on paper did not.
+- [`docs/AUDIT.md`](docs/AUDIT.md), 61 findings from three independent design-stage reviews
+  plus a post-build sharp-edge sweep, and the six cross-phase bugs found since. There is no
+  paid external audit; read this to see what the internal review caught and where a real one
+  should start.
 
 ## Build and test
 

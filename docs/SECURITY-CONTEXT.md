@@ -4,7 +4,7 @@ Architectural reconnaissance of the program as it stands at the end of Phase 3, 
 whoever audits it next. It maps what exists and where the consequences live; it does not
 report findings. [DESIGN-v2.md](DESIGN-v2.md) says what the program is meant to do and why,
 [TESTING.md](TESTING.md) says what the suite proves, and
-[AUDIT-v2-FINDINGS.md](AUDIT-v2-FINDINGS.md) is where the earlier attacks came from.
+[AUDIT.md](AUDIT.md) is where the earlier attacks came from.
 
 Every claim here was read out of the source rather than remembered. Where a figure is
 measured, the test that measures it is named.
