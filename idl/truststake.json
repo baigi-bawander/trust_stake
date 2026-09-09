@@ -1,0 +1,3666 @@
+{
+  "address": "3Vc6M8Az9h2GtDmqqhQKURqTKKygNfekQq7PoJris6V2",
+  "metadata": {
+    "name": "truststake",
+    "version": "0.1.0",
+    "spec": "0.1.0",
+    "description": "Created with Anchor"
+  },
+  "instructions": [
+    {
+      "name": "accept_config_authority",
+      "docs": [
+        "Completes a proposed `Config.authority` transfer."
+      ],
+      "discriminator": [
+        138,
+        34,
+        130,
+        16,
+        252,
+        207,
+        24,
+        90
+      ],
+      "accounts": [
+        {
+          "name": "pending_authority",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              },
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  50
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "event_authority"
+        },
+        {
+          "name": "program"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "accept_marketplace_authority",
+      "docs": [
+        "Completes a proposed `Marketplace.authority` transfer."
+      ],
+      "discriminator": [
+        15,
+        169,
+        155,
+        190,
+        128,
+        97,
+        193,
+        244
+      ],
+      "accounts": [
+        {
+          "name": "pending_authority",
+          "signer": true,
+          "relations": [
+            "marketplace"
+          ]
+        },
+        {
+          "name": "marketplace",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  50
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "marketplace.marketplace_id",
+                "account": "Marketplace"
+              }
+            ]
+          }
+        },
+        {
+          "name": "event_authority"
+        },
+        {
+          "name": "program"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "add_stake",
+      "docs": [
+        "Locks `amount` of additional collateral into the seller's",
+        "`stake_vault`."
+      ],
+      "discriminator": [
+        58,
+        135,
+        189,
+        105,
+        160,
+        120,
+        165,
+        224
+      ],
+      "accounts": [
+        {
+          "name": "seller",
+          "signer": true
+        },
+        {
+          "name": "stake",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  116,
+                  97,
+                  107,
+                  101
+                ]
+              },
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  50
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "seller"
+              }
+            ]
+          }
+        },
+        {
+          "name": "stake_vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  50
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "seller"
+              }
+            ]
+          }
+        },
+        {
+          "name": "mint"
+        },
+        {
+          "name": "seller_token_account",
+          "writable": true
+        },
+        {
+          "name": "token_program"
+        },
+        {
+          "name": "event_authority"
+        },
+        {
+          "name": "program"
+        }
+      ],
+      "args": [
+        {
+          "name": "amount",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "close_dispute",
+      "docs": [
+        "Permissionless once a complaint is decided and its receipt is too",
+        "old to reuse. Deletes the record and refunds its rent to the",
+        "buyer."
+      ],
+      "discriminator": [
+        60,
+        18,
+        92,
+        170,
+        100,
+        195,
+        146,
+        196
+      ],
+      "accounts": [
+        {
+          "name": "caller",
+          "signer": true
+        },
+        {
+          "name": "buyer",
+          "docs": [
+            "bound to `dispute.buyer` via `has_one` below."
+          ],
+          "writable": true,
+          "relations": [
+            "dispute"
+          ]
+        },
+        {
+          "name": "dispute",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  105,
+                  115,
+                  112,
+                  117,
+                  116,
+                  101
+                ]
+              },
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  50
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "dispute.marketplace",
+                "account": "DisputeRecord"
+              },
+              {
+                "kind": "account",
+                "path": "dispute.seller",
+                "account": "DisputeRecord"
+              },
+              {
+                "kind": "account",
+                "path": "dispute.order_id",
+                "account": "DisputeRecord"
+              }
+            ]
+          }
+        },
+        {
+          "name": "event_authority"
+        },
+        {
+          "name": "program"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "expire_dispute",
+      "docs": [
+        "Permissionless once a complaint has sat undecided for 30 days.",
+        "Nobody is paid, the bond returns to the buyer, the permit's freeze",
+        "lifts, and the marketplace takes a public mark."
+      ],
+      "discriminator": [
+        241,
+        116,
+        178,
+        182,
+        234,
+        173,
+        61,
+        120
+      ],
+      "accounts": [
+        {
+          "name": "caller",
+          "signer": true
+        },
+        {
+          "name": "marketplace",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  50
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "marketplace.marketplace_id",
+                "account": "Marketplace"
+              }
+            ]
+          },
+          "relations": [
+            "dispute"
+          ]
+        },
+        {
+          "name": "dispute",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  105,
+                  115,
+                  112,
+                  117,
+                  116,
+                  101
+                ]
+              },
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  50
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "dispute.marketplace",
+                "account": "DisputeRecord"
+              },
+              {
+                "kind": "account",
+                "path": "dispute.seller",
+                "account": "DisputeRecord"
+              },
+              {
+                "kind": "account",
+                "path": "dispute.order_id",
+                "account": "DisputeRecord"
+              }
+            ]
+          }
+        },
+        {
+          "name": "permit",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  101,
+                  114,
+                  109,
+                  105,
+                  116
+                ]
+              },
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  50
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "dispute.seller",
+                "account": "DisputeRecord"
+              },
+              {
+                "kind": "account",
+                "path": "dispute.marketplace",
+                "account": "DisputeRecord"
+              }
+            ]
+          }
+        },
+        {
+          "name": "bond_vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  98,
+                  111,
+                  110,
+                  100,
+                  115
+                ]
+              },
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  50
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "marketplace"
+              }
+            ]
+          }
+        },
+        {
+          "name": "mint"
+        },
+        {
+          "name": "buyer_token_account",
+          "writable": true
+        },
+        {
+          "name": "token_program"
+        },
+        {
+          "name": "event_authority"
+        },
+        {
+          "name": "program"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "grant_permit",
+      "docs": [
+        "Creates the seller's `SlashPermit` for a marketplace, locking",
+        "`max_slashable` out of their free collateral and freezing the",
+        "marketplace's current `complaint_window`/`bond_bps` onto it."
+      ],
+      "discriminator": [
+        170,
+        94,
+        187,
+        22,
+        42,
+        224,
+        162,
+        203
+      ],
+      "accounts": [
+        {
+          "name": "seller",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "stake",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  116,
+                  97,
+                  107,
+                  101
+                ]
+              },
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  50
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "seller"
+              }
+            ]
+          }
+        },
+        {
+          "name": "marketplace",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  50
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "marketplace.marketplace_id",
+                "account": "Marketplace"
+              }
+            ]
+          }
+        },
+        {
+          "name": "permit",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  101,
+                  114,
+                  109,
+                  105,
+                  116
+                ]
+              },
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  50
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "seller"
+              },
+              {
+                "kind": "account",
+                "path": "marketplace"
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "event_authority"
+        },
+        {
+          "name": "program"
+        }
+      ],
+      "args": [
+        {
+          "name": "max_slashable",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "increase_permit",
+      "docs": [
+        "Adds `delta` to an existing permit's `max_slashable`. Increase-only:",
+        "there is no handler that lowers a cap."
+      ],
+      "discriminator": [
+        176,
+        9,
+        253,
+        70,
+        236,
+        134,
+        2,
+        58
+      ],
+      "accounts": [
+        {
+          "name": "seller",
+          "signer": true,
+          "relations": [
+            "permit"
+          ]
+        },
+        {
+          "name": "stake",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  116,
+                  97,
+                  107,
+                  101
+                ]
+              },
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  50
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "seller"
+              }
+            ]
+          }
+        },
+        {
+          "name": "permit",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  101,
+                  114,
+                  109,
+                  105,
+                  116
+                ]
+              },
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  50
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "permit.seller",
+                "account": "SlashPermit"
+              },
+              {
+                "kind": "account",
+                "path": "permit.marketplace",
+                "account": "SlashPermit"
+              }
+            ]
+          }
+        },
+        {
+          "name": "event_authority"
+        },
+        {
+          "name": "program"
+        }
+      ],
+      "args": [
+        {
+          "name": "delta",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "initialize_config",
+      "docs": [
+        "Pins the protocol's collateral mint and chain tag, and records the",
+        "caller as the first `Config.authority`. Only the compiled-in",
+        "initial admin may call this."
+      ],
+      "discriminator": [
+        208,
+        127,
+        21,
+        1,
+        194,
+        190,
+        196,
+        70
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              },
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  50
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "mint",
+          "docs": [
+            "The protocol-wide collateral mint, pinned by address. There is no",
+            "`update_config`, so a deployment that pins the wrong mint here can",
+            "only be replaced, never repaired. Which extensions it may carry is",
+            "checked in [`handler`], where the allow-list can be named in the",
+            "error."
+          ]
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "event_authority"
+        },
+        {
+          "name": "program"
+        }
+      ],
+      "args": [
+        {
+          "name": "chain_id",
+          "type": "u8"
+        }
+      ]
+    },
+    {
+      "name": "initialize_stake",
+      "docs": [
+        "Creates a seller's one-and-only `SellerStake` account and its",
+        "`stake_vault`. Moves no collateral; `add_stake` does that."
+      ],
+      "discriminator": [
+        33,
+        175,
+        216,
+        4,
+        116,
+        130,
+        164,
+        177
+      ],
+      "accounts": [
+        {
+          "name": "seller",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              },
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  50
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "mint"
+        },
+        {
+          "name": "stake",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  116,
+                  97,
+                  107,
+                  101
+                ]
+              },
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  50
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "seller"
+              }
+            ]
+          }
+        },
+        {
+          "name": "stake_vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  50
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "seller"
+              }
+            ]
+          }
+        },
+        {
+          "name": "token_program"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "event_authority"
+        },
+        {
+          "name": "program"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "propose_config_authority",
+      "docs": [
+        "Names a new `Config.authority`. Takes effect only once the named",
+        "key accepts."
+      ],
+      "discriminator": [
+        31,
+        229,
+        9,
+        231,
+        45,
+        153,
+        123,
+        235
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              },
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  50
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "event_authority"
+        },
+        {
+          "name": "program"
+        }
+      ],
+      "args": [
+        {
+          "name": "new_authority",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
+      "name": "propose_marketplace_authority",
+      "docs": [
+        "Names a new `Marketplace.authority`. Takes effect only once the",
+        "named key accepts."
+      ],
+      "discriminator": [
+        116,
+        214,
+        206,
+        236,
+        133,
+        157,
+        231,
+        54
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "signer": true,
+          "relations": [
+            "marketplace"
+          ]
+        },
+        {
+          "name": "marketplace",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  50
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "marketplace.marketplace_id",
+                "account": "Marketplace"
+              }
+            ]
+          }
+        },
+        {
+          "name": "event_authority"
+        },
+        {
+          "name": "program"
+        }
+      ],
+      "args": [
+        {
+          "name": "new_authority",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
+      "name": "raise_dispute",
+      "docs": [
+        "Opens a complaint about `order_id`, proved by a",
+        "marketplace-signed receipt that the transaction's Ed25519",
+        "instruction verifies. Must be submitted as",
+        "`[Ed25519Program verify, raise_dispute]`, in that order."
+      ],
+      "discriminator": [
+        41,
+        243,
+        1,
+        51,
+        150,
+        95,
+        246,
+        73
+      ],
+      "accounts": [
+        {
+          "name": "buyer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "docs": [
+            "Carried for `chain_id` alone, which is the one receipt field with",
+            "no account of its own to check against."
+          ],
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              },
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  50
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "marketplace",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  50
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "marketplace.marketplace_id",
+                "account": "Marketplace"
+              }
+            ]
+          }
+        },
+        {
+          "name": "stake",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  116,
+                  97,
+                  107,
+                  101
+                ]
+              },
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  50
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "stake.seller",
+                "account": "SellerStake"
+              }
+            ]
+          }
+        },
+        {
+          "name": "permit",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  101,
+                  114,
+                  109,
+                  105,
+                  116
+                ]
+              },
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  50
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "stake.seller",
+                "account": "SellerStake"
+              },
+              {
+                "kind": "account",
+                "path": "marketplace"
+              }
+            ]
+          }
+        },
+        {
+          "name": "dispute",
+          "docs": [
+            "The replay guard: a second complaint about the same order collides",
+            "with this address and `init` fails (docs/DESIGN-v2.md, \"The",
+            "offchain receipt\")."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  105,
+                  115,
+                  112,
+                  117,
+                  116,
+                  101
+                ]
+              },
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  50
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "marketplace"
+              },
+              {
+                "kind": "account",
+                "path": "stake.seller",
+                "account": "SellerStake"
+              },
+              {
+                "kind": "arg",
+                "path": "order_id"
+              }
+            ]
+          }
+        },
+        {
+          "name": "bond_vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  98,
+                  111,
+                  110,
+                  100,
+                  115
+                ]
+              },
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  50
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "marketplace"
+              }
+            ]
+          }
+        },
+        {
+          "name": "mint"
+        },
+        {
+          "name": "buyer_token_account",
+          "writable": true
+        },
+        {
+          "name": "instructions_sysvar",
+          "docs": [
+            "`ed25519::verify_signed_receipt`, which is the first thing the",
+            "handler does. Left unchecked here rather than carrying an",
+            "`address` constraint so that the module which reads this account",
+            "is also the module that proves it is the right one."
+          ]
+        },
+        {
+          "name": "token_program"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "event_authority"
+        },
+        {
+          "name": "program"
+        }
+      ],
+      "args": [
+        {
+          "name": "order_id",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        },
+        {
+          "name": "claim",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "register_marketplace",
+      "docs": [
+        "Registers a new marketplace tenant and creates its `bond_vault`."
+      ],
+      "discriminator": [
+        41,
+        150,
+        201,
+        250,
+        157,
+        203,
+        242,
+        210
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              },
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  50
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "mint"
+        },
+        {
+          "name": "marketplace",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  50
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "marketplace_id"
+              }
+            ]
+          }
+        },
+        {
+          "name": "bond_vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  98,
+                  111,
+                  110,
+                  100,
+                  115
+                ]
+              },
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  50
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "marketplace"
+              }
+            ]
+          }
+        },
+        {
+          "name": "token_program"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "event_authority"
+        },
+        {
+          "name": "program"
+        }
+      ],
+      "args": [
+        {
+          "name": "marketplace_id",
+          "type": {
+            "array": [
+              "u8",
+              16
+            ]
+          }
+        },
+        {
+          "name": "receipt_signer",
+          "type": "pubkey"
+        },
+        {
+          "name": "arbiter",
+          "type": "pubkey"
+        },
+        {
+          "name": "complaint_window",
+          "type": "i64"
+        },
+        {
+          "name": "bond_bps",
+          "type": "u16"
+        }
+      ]
+    },
+    {
+      "name": "release_permit",
+      "docs": [
+        "Permissionless once `now >= revoked_at + complaint_window` and",
+        "`open_disputes == 0`. Subtracts the permit's remaining allowance",
+        "from `stake.committed`, closes the permit, and refunds its rent to",
+        "the seller."
+      ],
+      "discriminator": [
+        159,
+        84,
+        126,
+        114,
+        141,
+        12,
+        207,
+        208
+      ],
+      "accounts": [
+        {
+          "name": "caller",
+          "signer": true
+        },
+        {
+          "name": "seller",
+          "docs": [
+            "bound to `permit.seller` via `has_one` below."
+          ],
+          "writable": true,
+          "relations": [
+            "permit"
+          ]
+        },
+        {
+          "name": "permit",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  101,
+                  114,
+                  109,
+                  105,
+                  116
+                ]
+              },
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  50
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "permit.seller",
+                "account": "SlashPermit"
+              },
+              {
+                "kind": "account",
+                "path": "permit.marketplace",
+                "account": "SlashPermit"
+              }
+            ]
+          }
+        },
+        {
+          "name": "stake",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  116,
+                  97,
+                  107,
+                  101
+                ]
+              },
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  50
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "seller"
+              }
+            ]
+          }
+        },
+        {
+          "name": "event_authority"
+        },
+        {
+          "name": "program"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "release_permit_early",
+      "docs": [
+        "Does what `release_permit` does but skips the wait when both the",
+        "seller and the marketplace's current authority sign."
+      ],
+      "discriminator": [
+        192,
+        87,
+        191,
+        100,
+        208,
+        110,
+        171,
+        95
+      ],
+      "accounts": [
+        {
+          "name": "seller",
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "permit"
+          ]
+        },
+        {
+          "name": "authority",
+          "signer": true,
+          "relations": [
+            "marketplace"
+          ]
+        },
+        {
+          "name": "marketplace",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  50
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "marketplace.marketplace_id",
+                "account": "Marketplace"
+              }
+            ]
+          },
+          "relations": [
+            "permit"
+          ]
+        },
+        {
+          "name": "permit",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  101,
+                  114,
+                  109,
+                  105,
+                  116
+                ]
+              },
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  50
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "permit.seller",
+                "account": "SlashPermit"
+              },
+              {
+                "kind": "account",
+                "path": "permit.marketplace",
+                "account": "SlashPermit"
+              }
+            ]
+          }
+        },
+        {
+          "name": "stake",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  116,
+                  97,
+                  107,
+                  101
+                ]
+              },
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  50
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "seller"
+              }
+            ]
+          }
+        },
+        {
+          "name": "event_authority"
+        },
+        {
+          "name": "program"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "resolve_dispute",
+      "docs": [
+        "Decides an open complaint. Signed by the marketplace's arbiter.",
+        "Upheld pays the buyer out of the seller's collateral and returns",
+        "the bond; rejected forfeits the bond to the seller."
+      ],
+      "discriminator": [
+        231,
+        6,
+        202,
+        6,
+        96,
+        103,
+        12,
+        230
+      ],
+      "accounts": [
+        {
+          "name": "arbiter",
+          "signer": true
+        },
+        {
+          "name": "marketplace",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  50
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "marketplace.marketplace_id",
+                "account": "Marketplace"
+              }
+            ]
+          },
+          "relations": [
+            "dispute"
+          ]
+        },
+        {
+          "name": "dispute",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  105,
+                  115,
+                  112,
+                  117,
+                  116,
+                  101
+                ]
+              },
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  50
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "dispute.marketplace",
+                "account": "DisputeRecord"
+              },
+              {
+                "kind": "account",
+                "path": "dispute.seller",
+                "account": "DisputeRecord"
+              },
+              {
+                "kind": "account",
+                "path": "dispute.order_id",
+                "account": "DisputeRecord"
+              }
+            ]
+          }
+        },
+        {
+          "name": "permit",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  101,
+                  114,
+                  109,
+                  105,
+                  116
+                ]
+              },
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  50
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "dispute.seller",
+                "account": "DisputeRecord"
+              },
+              {
+                "kind": "account",
+                "path": "dispute.marketplace",
+                "account": "DisputeRecord"
+              }
+            ]
+          }
+        },
+        {
+          "name": "stake",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  116,
+                  97,
+                  107,
+                  101
+                ]
+              },
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  50
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "dispute.seller",
+                "account": "DisputeRecord"
+              }
+            ]
+          }
+        },
+        {
+          "name": "stake_vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  50
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "dispute.seller",
+                "account": "DisputeRecord"
+              }
+            ]
+          }
+        },
+        {
+          "name": "bond_vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  98,
+                  111,
+                  110,
+                  100,
+                  115
+                ]
+              },
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  50
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "marketplace"
+              }
+            ]
+          }
+        },
+        {
+          "name": "mint"
+        },
+        {
+          "name": "buyer_token_account",
+          "writable": true
+        },
+        {
+          "name": "token_program"
+        },
+        {
+          "name": "event_authority"
+        },
+        {
+          "name": "program"
+        }
+      ],
+      "args": [
+        {
+          "name": "upheld",
+          "type": "bool"
+        }
+      ]
+    },
+    {
+      "name": "revoke_permit",
+      "docs": [
+        "Stamps `revoked_at`, starting the permit's complaint window. Frees",
+        "no collateral by itself; `release_permit` does that once the",
+        "window elapses."
+      ],
+      "discriminator": [
+        1,
+        245,
+        99,
+        29,
+        176,
+        216,
+        229,
+        206
+      ],
+      "accounts": [
+        {
+          "name": "seller",
+          "signer": true,
+          "relations": [
+            "permit"
+          ]
+        },
+        {
+          "name": "permit",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  101,
+                  114,
+                  109,
+                  105,
+                  116
+                ]
+              },
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  50
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "permit.seller",
+                "account": "SlashPermit"
+              },
+              {
+                "kind": "account",
+                "path": "permit.marketplace",
+                "account": "SlashPermit"
+              }
+            ]
+          }
+        },
+        {
+          "name": "event_authority"
+        },
+        {
+          "name": "program"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "update_marketplace",
+      "docs": [
+        "Updates whichever of a marketplace's settings are supplied; the",
+        "rest keep their current value."
+      ],
+      "discriminator": [
+        72,
+        12,
+        22,
+        71,
+        86,
+        113,
+        79,
+        167
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "signer": true,
+          "relations": [
+            "marketplace"
+          ]
+        },
+        {
+          "name": "marketplace",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  50
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "marketplace.marketplace_id",
+                "account": "Marketplace"
+              }
+            ]
+          }
+        },
+        {
+          "name": "event_authority"
+        },
+        {
+          "name": "program"
+        }
+      ],
+      "args": [
+        {
+          "name": "new_receipt_signer",
+          "type": {
+            "option": "pubkey"
+          }
+        },
+        {
+          "name": "new_arbiter",
+          "type": {
+            "option": "pubkey"
+          }
+        },
+        {
+          "name": "new_complaint_window",
+          "type": {
+            "option": "i64"
+          }
+        },
+        {
+          "name": "new_bond_bps",
+          "type": {
+            "option": "u16"
+          }
+        }
+      ]
+    },
+    {
+      "name": "withdraw_stake",
+      "docs": [
+        "Moves `amount` out of the seller's `stake_vault`, gated on",
+        "`staked - amount >= committed`."
+      ],
+      "discriminator": [
+        153,
+        8,
+        22,
+        138,
+        105,
+        176,
+        87,
+        66
+      ],
+      "accounts": [
+        {
+          "name": "seller",
+          "signer": true
+        },
+        {
+          "name": "stake",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  116,
+                  97,
+                  107,
+                  101
+                ]
+              },
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  50
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "seller"
+              }
+            ]
+          }
+        },
+        {
+          "name": "stake_vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  50
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "seller"
+              }
+            ]
+          }
+        },
+        {
+          "name": "mint"
+        },
+        {
+          "name": "seller_token_account",
+          "writable": true
+        },
+        {
+          "name": "token_program"
+        },
+        {
+          "name": "event_authority"
+        },
+        {
+          "name": "program"
+        }
+      ],
+      "args": [
+        {
+          "name": "amount",
+          "type": "u64"
+        }
+      ]
+    }
+  ],
+  "accounts": [
+    {
+      "name": "Config",
+      "discriminator": [
+        155,
+        12,
+        170,
+        224,
+        30,
+        250,
+        204,
+        130
+      ]
+    },
+    {
+      "name": "DisputeRecord",
+      "discriminator": [
+        198,
+        199,
+        79,
+        209,
+        12,
+        215,
+        34,
+        47
+      ]
+    },
+    {
+      "name": "Marketplace",
+      "discriminator": [
+        70,
+        222,
+        41,
+        62,
+        78,
+        3,
+        32,
+        174
+      ]
+    },
+    {
+      "name": "SellerStake",
+      "discriminator": [
+        187,
+        104,
+        73,
+        26,
+        255,
+        109,
+        69,
+        239
+      ]
+    },
+    {
+      "name": "SlashPermit",
+      "discriminator": [
+        99,
+        130,
+        197,
+        60,
+        205,
+        19,
+        67,
+        122
+      ]
+    }
+  ],
+  "events": [
+    {
+      "name": "ConfigAuthorityAccepted",
+      "discriminator": [
+        166,
+        249,
+        198,
+        239,
+        64,
+        193,
+        191,
+        242
+      ]
+    },
+    {
+      "name": "ConfigAuthorityProposed",
+      "discriminator": [
+        125,
+        29,
+        33,
+        186,
+        153,
+        16,
+        155,
+        229
+      ]
+    },
+    {
+      "name": "ConfigInitialized",
+      "discriminator": [
+        181,
+        49,
+        200,
+        156,
+        19,
+        167,
+        178,
+        91
+      ]
+    },
+    {
+      "name": "DisputeClosed",
+      "discriminator": [
+        171,
+        46,
+        157,
+        35,
+        78,
+        224,
+        13,
+        173
+      ]
+    },
+    {
+      "name": "DisputeExpired",
+      "discriminator": [
+        28,
+        47,
+        191,
+        124,
+        204,
+        113,
+        101,
+        116
+      ]
+    },
+    {
+      "name": "DisputeRaised",
+      "discriminator": [
+        246,
+        167,
+        109,
+        37,
+        142,
+        45,
+        38,
+        176
+      ]
+    },
+    {
+      "name": "DisputeResolved",
+      "discriminator": [
+        121,
+        64,
+        249,
+        153,
+        139,
+        128,
+        236,
+        187
+      ]
+    },
+    {
+      "name": "MarketplaceAuthorityAccepted",
+      "discriminator": [
+        127,
+        59,
+        176,
+        218,
+        130,
+        133,
+        60,
+        198
+      ]
+    },
+    {
+      "name": "MarketplaceAuthorityProposed",
+      "discriminator": [
+        218,
+        20,
+        173,
+        45,
+        87,
+        174,
+        173,
+        33
+      ]
+    },
+    {
+      "name": "MarketplaceRegistered",
+      "discriminator": [
+        190,
+        61,
+        200,
+        233,
+        114,
+        36,
+        8,
+        167
+      ]
+    },
+    {
+      "name": "MarketplaceUpdated",
+      "discriminator": [
+        76,
+        144,
+        13,
+        244,
+        21,
+        28,
+        23,
+        203
+      ]
+    },
+    {
+      "name": "PermitGranted",
+      "discriminator": [
+        195,
+        66,
+        5,
+        140,
+        74,
+        128,
+        13,
+        164
+      ]
+    },
+    {
+      "name": "PermitIncreased",
+      "discriminator": [
+        47,
+        212,
+        221,
+        152,
+        135,
+        162,
+        27,
+        90
+      ]
+    },
+    {
+      "name": "PermitReleased",
+      "discriminator": [
+        18,
+        97,
+        193,
+        165,
+        101,
+        158,
+        126,
+        188
+      ]
+    },
+    {
+      "name": "PermitReleasedEarly",
+      "discriminator": [
+        94,
+        47,
+        188,
+        169,
+        143,
+        142,
+        223,
+        37
+      ]
+    },
+    {
+      "name": "PermitRevoked",
+      "discriminator": [
+        177,
+        216,
+        44,
+        90,
+        156,
+        213,
+        20,
+        186
+      ]
+    },
+    {
+      "name": "StakeAdded",
+      "discriminator": [
+        139,
+        170,
+        134,
+        90,
+        22,
+        96,
+        23,
+        193
+      ]
+    },
+    {
+      "name": "StakeInitialized",
+      "discriminator": [
+        148,
+        201,
+        109,
+        225,
+        10,
+        33,
+        117,
+        163
+      ]
+    },
+    {
+      "name": "StakeWithdrawn",
+      "discriminator": [
+        33,
+        120,
+        159,
+        58,
+        140,
+        255,
+        174,
+        79
+      ]
+    }
+  ],
+  "errors": [
+    {
+      "code": 6000,
+      "name": "NotInitialAdmin",
+      "msg": "Only the compiled-in initial admin may call this"
+    },
+    {
+      "code": 6001,
+      "name": "ComplaintWindowOutOfBounds",
+      "msg": "Complaint window must be between 2 and 30 days"
+    },
+    {
+      "code": 6002,
+      "name": "BondBpsTooHigh",
+      "msg": "Bond rate exceeds the protocol ceiling of 20%"
+    },
+    {
+      "code": 6003,
+      "name": "ZeroAmount",
+      "msg": "Amount must be greater than zero"
+    },
+    {
+      "code": 6004,
+      "name": "WrongMint",
+      "msg": "Mint does not match the account it is bound to"
+    },
+    {
+      "code": 6005,
+      "name": "MathOverflow",
+      "msg": "Arithmetic overflow"
+    },
+    {
+      "code": 6006,
+      "name": "ConservationViolation",
+      "msg": "Vault balance is below the recorded ledger"
+    },
+    {
+      "code": 6007,
+      "name": "CommittedExceedsStaked",
+      "msg": "Committed collateral would exceed staked collateral"
+    },
+    {
+      "code": 6008,
+      "name": "PermitAlreadyRevoked",
+      "msg": "Permit is already revoked"
+    },
+    {
+      "code": 6009,
+      "name": "ComplaintWindowNotElapsed",
+      "msg": "Complaint window has not elapsed since revocation"
+    },
+    {
+      "code": 6010,
+      "name": "OpenDisputesRemaining",
+      "msg": "Permit has open disputes"
+    },
+    {
+      "code": 6011,
+      "name": "PermitNotRevoked",
+      "msg": "Permit must be revoked first"
+    },
+    {
+      "code": 6012,
+      "name": "EarlyReleaseWaitNotElapsed",
+      "msg": "Early release must wait at least the clock-skew tolerance after revocation"
+    },
+    {
+      "code": 6013,
+      "name": "InvalidInstructionsSysvar",
+      "msg": "Instructions sysvar account is not the real one"
+    },
+    {
+      "code": 6014,
+      "name": "MustBeTopLevelInstruction",
+      "msg": "raise_dispute must be a top-level instruction, not reached through CPI"
+    },
+    {
+      "code": 6015,
+      "name": "MissingEd25519Instruction",
+      "msg": "No Ed25519 verify instruction immediately before this one"
+    },
+    {
+      "code": 6016,
+      "name": "MalformedEd25519Instruction",
+      "msg": "Ed25519 verify instruction is not the canonical single-signature form"
+    },
+    {
+      "code": 6017,
+      "name": "WrongReceiptSigner",
+      "msg": "Receipt was not signed by the marketplace's receipt signer"
+    },
+    {
+      "code": 6018,
+      "name": "WrongReceiptDomain",
+      "msg": "Receipt carries the wrong domain prefix"
+    },
+    {
+      "code": 6019,
+      "name": "WrongReceiptProgram",
+      "msg": "Receipt was issued for a different program"
+    },
+    {
+      "code": 6020,
+      "name": "WrongChainId",
+      "msg": "Receipt was issued for a different cluster"
+    },
+    {
+      "code": 6021,
+      "name": "ReceiptExpired",
+      "msg": "Receipt is past its expiry"
+    },
+    {
+      "code": 6022,
+      "name": "ReceiptIssuedInFuture",
+      "msg": "Receipt is dated further in the future than the allowed clock skew tolerance"
+    },
+    {
+      "code": 6023,
+      "name": "ComplaintWindowClosed",
+      "msg": "Complaint window for this receipt has closed"
+    },
+    {
+      "code": 6024,
+      "name": "ReceiptMarketplaceMismatch",
+      "msg": "Receipt names a different marketplace"
+    },
+    {
+      "code": 6025,
+      "name": "ReceiptSellerMismatch",
+      "msg": "Receipt names a different seller"
+    },
+    {
+      "code": 6026,
+      "name": "ReceiptBuyerMismatch",
+      "msg": "Receipt names a different buyer"
+    },
+    {
+      "code": 6027,
+      "name": "ReceiptOrderMismatch",
+      "msg": "Receipt names a different order"
+    },
+    {
+      "code": 6028,
+      "name": "ReceiptIssuedAfterRevocation",
+      "msg": "Receipt was issued after the permit was revoked"
+    },
+    {
+      "code": 6029,
+      "name": "ReceiptIssuedBeforeGrant",
+      "msg": "Receipt was issued before the permit was granted"
+    },
+    {
+      "code": 6030,
+      "name": "ClaimExceedsReceipt",
+      "msg": "Claim exceeds the receipt's order amount"
+    },
+    {
+      "code": 6031,
+      "name": "NotArbiter",
+      "msg": "Only the marketplace's arbiter may resolve this dispute"
+    },
+    {
+      "code": 6032,
+      "name": "DisputeNotOpen",
+      "msg": "Dispute is not open"
+    },
+    {
+      "code": 6033,
+      "name": "DisputeStillOpen",
+      "msg": "Dispute is still open"
+    },
+    {
+      "code": 6034,
+      "name": "DisputeNotExpired",
+      "msg": "Dispute has not reached its expiry"
+    },
+    {
+      "code": 6035,
+      "name": "DisputeNotClosable",
+      "msg": "Dispute's receipt is still inside its complaint window"
+    },
+    {
+      "code": 6036,
+      "name": "DisputeExpired",
+      "msg": "Dispute has passed its expiry and can only be expired, not resolved"
+    },
+    {
+      "code": 6037,
+      "name": "InvalidChainId",
+      "msg": "chain_id must be the devnet or mainnet tag"
+    },
+    {
+      "code": 6038,
+      "name": "AccountVersionMismatch",
+      "msg": "Account was written by a different program version"
+    },
+    {
+      "code": 6039,
+      "name": "UnsupportedMintExtension",
+      "msg": "Collateral mint carries a token extension the protocol does not support"
+    }
+  ],
+  "types": [
+    {
+      "name": "Config",
+      "docs": [
+        "Network-wide settings, one PDA per deployment (`[\"config\", \"v2\"]`).",
+        "`collateral_mint` and `chain_id` are fixed at `initialize_config` and",
+        "never change: there is no `update_config`, since changing the mint once",
+        "vaults hold tokens would strand every balance, and the chain tag is a",
+        "deployment fact. Only `authority` moves, through the two-step transfer."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "version",
+            "type": "u8"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "pending_authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "collateral_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "chain_id",
+            "type": "u8"
+          },
+          {
+            "name": "reserved",
+            "type": {
+              "array": [
+                "u8",
+                64
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "ConfigAuthorityAccepted",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "previous_authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "new_authority",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ConfigAuthorityProposed",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "current_authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "pending_authority",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ConfigInitialized",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "collateral_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "chain_id",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "DisputeClosed",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "marketplace",
+            "type": "pubkey"
+          },
+          {
+            "name": "buyer",
+            "type": "pubkey"
+          },
+          {
+            "name": "order_id",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "status",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "DisputeExpired",
+      "docs": [
+        "The marketplace's permanent public mark for never deciding",
+        "(decision 7). Nobody is paid; the bond goes back to the buyer."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "marketplace",
+            "type": "pubkey"
+          },
+          {
+            "name": "seller",
+            "type": "pubkey"
+          },
+          {
+            "name": "buyer",
+            "type": "pubkey"
+          },
+          {
+            "name": "order_id",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "bond",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "DisputeRaised",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "marketplace",
+            "type": "pubkey"
+          },
+          {
+            "name": "seller",
+            "type": "pubkey"
+          },
+          {
+            "name": "buyer",
+            "type": "pubkey"
+          },
+          {
+            "name": "order_id",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "claim",
+            "type": "u64"
+          },
+          {
+            "name": "bond",
+            "type": "u64"
+          },
+          {
+            "name": "expires_at",
+            "type": "i64"
+          },
+          {
+            "name": "closable_after",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "DisputeRecord",
+      "docs": [
+        "An open or resolved complaint (`[\"dispute\", \"v2\", marketplace, seller,",
+        "order_id]`), created by `raise_dispute` and deleted by `close_dispute`",
+        "once its receipt is too old to reuse. The account's existence is also",
+        "the replay guard: a second complaint against the same order collides",
+        "with this PDA and cannot be created."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "version",
+            "type": "u8"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "marketplace",
+            "type": "pubkey"
+          },
+          {
+            "name": "seller",
+            "type": "pubkey"
+          },
+          {
+            "name": "buyer",
+            "type": "pubkey"
+          },
+          {
+            "name": "order_id",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "claim",
+            "type": "u64"
+          },
+          {
+            "name": "bond",
+            "docs": [
+              "The amount actually deposited, not recomputed later from a",
+              "possibly-changed `bond_bps`."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "created_at",
+            "type": "i64"
+          },
+          {
+            "name": "expires_at",
+            "docs": [
+              "`created_at + DISPUTE_EXPIRY` (30 days, protocol constant)."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "closable_after",
+            "docs": [
+              "`receipt.issued_at + max(permit.complaint_window,",
+              "MAX_COMPLAINT_WINDOW_SECONDS)`, not the live permit's own window",
+              "alone: a permit PDA carries no nonce, so a grandfathered",
+              "marketplace's wider window must not let a re-grant at the same",
+              "address outlive the record that blocks its own receipts from being",
+              "replayed (`raise_dispute`'s handler doc comment; docs/DESIGN-v2.md)."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "status",
+            "docs": [
+              "One of [`DisputeStatus`], as `DisputeStatus::Open as u8`."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "reserved",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "DisputeResolved",
+      "docs": [
+        "Carries the buyer and the outcome, which is what makes a buyer's",
+        "history computable offchain without storing any of it onchain",
+        "(docs/DESIGN-v2.md, \"What this design deliberately does not do\").",
+        "`payout` is zero on the rejected path, where the bond moves to the",
+        "seller instead."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "marketplace",
+            "type": "pubkey"
+          },
+          {
+            "name": "seller",
+            "type": "pubkey"
+          },
+          {
+            "name": "buyer",
+            "type": "pubkey"
+          },
+          {
+            "name": "order_id",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "upheld",
+            "type": "bool"
+          },
+          {
+            "name": "claim",
+            "type": "u64"
+          },
+          {
+            "name": "payout",
+            "type": "u64"
+          },
+          {
+            "name": "bond",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Marketplace",
+      "docs": [
+        "A tenant of the protocol (`[\"market\", \"v2\", marketplace_id]`).",
+        "`marketplace_id` is the client-chosen, immutable identity every",
+        "subordinate PDA derives from; `authority`, `receipt_signer` and",
+        "`arbiter` are ordinary fields that rotate through `update_marketplace`",
+        "and the two-step authority transfer, so a lost or rotated key never",
+        "orphans a seller's permit or the dispute history."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "version",
+            "type": "u8"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "marketplace_id",
+            "type": {
+              "array": [
+                "u8",
+                16
+              ]
+            }
+          },
+          {
+            "name": "authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "pending_authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "receipt_signer",
+            "type": "pubkey"
+          },
+          {
+            "name": "prev_receipt_signer",
+            "docs": [
+              "Valid for receipts issued before `signer_rotated_at`, so an honest",
+              "key rotation doesn't silently void every outstanding buyer's claim."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "signer_rotated_at",
+            "type": "i64"
+          },
+          {
+            "name": "arbiter",
+            "type": "pubkey"
+          },
+          {
+            "name": "complaint_window",
+            "docs": [
+              "2..30 days. Copied onto each new permit at grant time (Phase 2)."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "bond_bps",
+            "docs": [
+              "<= `MAX_BOND_BPS`. Copied onto each new permit at grant time (Phase 2)."
+            ],
+            "type": "u16"
+          },
+          {
+            "name": "disputes_total",
+            "type": "u32"
+          },
+          {
+            "name": "disputes_upheld",
+            "type": "u32"
+          },
+          {
+            "name": "disputes_abandoned",
+            "type": "u32"
+          },
+          {
+            "name": "total_slashed",
+            "type": "u64"
+          },
+          {
+            "name": "reserved",
+            "type": {
+              "array": [
+                "u8",
+                64
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "MarketplaceAuthorityAccepted",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "marketplace",
+            "type": "pubkey"
+          },
+          {
+            "name": "previous_authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "new_authority",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "MarketplaceAuthorityProposed",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "marketplace",
+            "type": "pubkey"
+          },
+          {
+            "name": "current_authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "pending_authority",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "MarketplaceRegistered",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "marketplace",
+            "type": "pubkey"
+          },
+          {
+            "name": "marketplace_id",
+            "type": {
+              "array": [
+                "u8",
+                16
+              ]
+            }
+          },
+          {
+            "name": "authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "receipt_signer",
+            "type": "pubkey"
+          },
+          {
+            "name": "arbiter",
+            "type": "pubkey"
+          },
+          {
+            "name": "complaint_window",
+            "type": "i64"
+          },
+          {
+            "name": "bond_bps",
+            "type": "u16"
+          }
+        ]
+      }
+    },
+    {
+      "name": "MarketplaceUpdated",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "marketplace",
+            "type": "pubkey"
+          },
+          {
+            "name": "receipt_signer",
+            "type": "pubkey"
+          },
+          {
+            "name": "arbiter",
+            "type": "pubkey"
+          },
+          {
+            "name": "complaint_window",
+            "type": "i64"
+          },
+          {
+            "name": "bond_bps",
+            "type": "u16"
+          }
+        ]
+      }
+    },
+    {
+      "name": "PermitGranted",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "seller",
+            "type": "pubkey"
+          },
+          {
+            "name": "marketplace",
+            "type": "pubkey"
+          },
+          {
+            "name": "max_slashable",
+            "type": "u64"
+          },
+          {
+            "name": "complaint_window",
+            "type": "i64"
+          },
+          {
+            "name": "bond_bps",
+            "type": "u16"
+          }
+        ]
+      }
+    },
+    {
+      "name": "PermitIncreased",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "seller",
+            "type": "pubkey"
+          },
+          {
+            "name": "marketplace",
+            "type": "pubkey"
+          },
+          {
+            "name": "delta",
+            "type": "u64"
+          },
+          {
+            "name": "max_slashable",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "PermitReleased",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "seller",
+            "type": "pubkey"
+          },
+          {
+            "name": "marketplace",
+            "type": "pubkey"
+          },
+          {
+            "name": "remaining_allowance",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "PermitReleasedEarly",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "seller",
+            "type": "pubkey"
+          },
+          {
+            "name": "marketplace",
+            "type": "pubkey"
+          },
+          {
+            "name": "remaining_allowance",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "PermitRevoked",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "seller",
+            "type": "pubkey"
+          },
+          {
+            "name": "marketplace",
+            "type": "pubkey"
+          },
+          {
+            "name": "revoked_at",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "SellerStake",
+      "docs": [
+        "A seller's shared collateral, one PDA per seller globally",
+        "(`[\"stake\", \"v2\", seller]`), backing every marketplace they sell on.",
+        "`initialize_stake` creates this account and its `stake_vault` only;",
+        "`add_stake` moves collateral. That split is what lets a seller slashed",
+        "to zero call `add_stake` and trade again, rather than being stuck with",
+        "a permanently dead account."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "version",
+            "type": "u8"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "seller",
+            "type": "pubkey"
+          },
+          {
+            "name": "staked",
+            "docs": [
+              "Always equal to `stake_vault`'s token balance."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "committed",
+            "docs": [
+              "Sum of REMAINING allowance across active permits, that is",
+              "`max_slashable - slashed` summed over every unreleased",
+              "`SlashPermit` (Phase 2). Defined as the sum of caps would break",
+              "`committed <= staked` the first time anyone is slashed."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "disputes_total",
+            "type": "u32"
+          },
+          {
+            "name": "disputes_lost",
+            "type": "u32"
+          },
+          {
+            "name": "reserved",
+            "type": {
+              "array": [
+                "u8",
+                64
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "SlashPermit",
+      "docs": [
+        "A seller's bounded, revocable line of credit to one marketplace",
+        "(`[\"permit\", \"v2\", seller, marketplace]`). Declared now because",
+        "docs/DESIGN-v2.md's account model fixes all five account layouts",
+        "together; no handler creates or reads this until `grant_permit`",
+        "(Phase 2)."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "version",
+            "type": "u8"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "seller",
+            "type": "pubkey"
+          },
+          {
+            "name": "marketplace",
+            "type": "pubkey"
+          },
+          {
+            "name": "max_slashable",
+            "docs": [
+              "Increase-only: the seller can raise this but never lower it."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "slashed",
+            "type": "u64"
+          },
+          {
+            "name": "open_disputes",
+            "docs": [
+              "Blocks release of THIS permit only."
+            ],
+            "type": "u16"
+          },
+          {
+            "name": "revoked_at",
+            "docs": [
+              "`i64::MAX` means active. A zero sentinel would make the release",
+              "check trivially true for every active permit."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "complaint_window",
+            "docs": [
+              "Frozen at grant from the marketplace's setting at that moment."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "bond_bps",
+            "docs": [
+              "Frozen at grant from the marketplace's setting at that moment."
+            ],
+            "type": "u16"
+          },
+          {
+            "name": "granted_at",
+            "docs": [
+              "Stamped from `Clock` in `grant_permit`, never touched again",
+              "(`increase_permit` modifies this same era, it does not start a new",
+              "one). Together with `revoked_at` this bounds the era a receipt has",
+              "to fall inside: a permit PDA is freed by both release paths and",
+              "re-granted at the same address, so a receipt has to be checked",
+              "against the era that actually issued it, not merely against",
+              "whatever occupies the address now (`raise_dispute`, check 7).",
+              "Appended here, after `bond_bps`, because it was added after those",
+              "fields already shipped: Borsh is positional, so a field this",
+              "struct's account-model rule requires be appended, not inserted,",
+              "must sit immediately before `reserved`, in the order the fields",
+              "were actually introduced."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "reserved",
+            "docs": [
+              "Shrunk from 32 to 24 bytes to make room for `granted_at` above:",
+              "this is exactly the layout evolution `reserved` exists for (see",
+              "the account-model note in docs/DESIGN-v2.md), and using it keeps",
+              "every `SlashPermit`'s size, and therefore its rent, unchanged."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                24
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "StakeAdded",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "seller",
+            "type": "pubkey"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          },
+          {
+            "name": "staked",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "StakeInitialized",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "seller",
+            "type": "pubkey"
+          },
+          {
+            "name": "stake_vault",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "StakeWithdrawn",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "seller",
+            "type": "pubkey"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          },
+          {
+            "name": "staked",
+            "type": "u64"
+          }
+        ]
+      }
+    }
+  ]
+}

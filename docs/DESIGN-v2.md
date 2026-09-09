@@ -683,10 +683,12 @@ on a real payout rather than the seller retreating, and is the one path that shr
 `revoke_permit` stamps `revoked_at` and nothing else. It stops new receipts immediately but
 frees no collateral; the permit's remaining allowance stays inside `committed` until release.
 
-`release_permit` is permissionless and requires `now >= revoked_at + complaint_window` and
-`open_disputes == 0`. It **subtracts the permit's remaining allowance from
-`stake.committed`**, which is the entire point of releasing, then closes the permit account
-and refunds its rent to the seller, who paid it. `release_permit_early` skips that
+`release_permit` is permissionless and requires
+`now >= revoked_at + complaint_window.max(CLOCK_SKEW_TOLERANCE_SECONDS)` (`earliest_release`,
+`instructions/release_permit.rs`) and `open_disputes == 0`. It **subtracts the permit's
+remaining allowance from `stake.committed`**, which is the entire point of releasing, then
+closes the permit account and refunds its rent to the seller, who paid it.
+`release_permit_early` skips that
 complaint-window wait when the seller and the marketplace authority both sign, and does the
 same subtraction, but still requires `now >= revoked_at + CLOCK_SKEW_TOLERANCE_SECONDS`. That
 minimum wait is not the complaint-window protection in miniature; it exists purely so that

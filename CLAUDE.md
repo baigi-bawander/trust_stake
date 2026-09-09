@@ -260,30 +260,46 @@ See `docs/DESIGN-v2.md`, "What this design deliberately does not do" and "Honest
   2026-08-24), and `init` fails against an account that is already allocated. A stale IDL is
   worse than no IDL: Anchor numbers error codes positionally as 6000 + index and publishes
   that numbering in the IDL, so an outdated one mis-names every error and mis-decodes any
-  instruction whose arguments changed.
+  instruction whose arguments changed. The repo now also carries a copy of the current IDL at
+  [idl/truststake.json](idl/truststake.json) (see that directory's README) — a real fix for
+  clone-and-build consumers, independent of whether the onchain upload below ever succeeds.
 
-  **This debt is still outstanding, and the upgrade above currently does not work.** It was
-  attempted three times on 2026-08-31 alongside that day's program deploy, twice plainly and
-  once with `--priority-fee 200000`, and failed identically every time with `[Error] The
-  provided transaction plan failed to execute` / `Error: Failed to upgrade IDL`. That is *not*
-  the "reports failure after succeeding" trap recorded under "Known gotchas" — it was checked
-  onchain rather than believed, and the upload genuinely did not land. What actually happens:
-  Anchor 1.1.2 stores the IDL in a Program Metadata program account
-  (`ProgM6JCCvbYkfKqJYHePx4xxSUSqJp7rh8Lyv7nk7S`, address
-  `A1r5sAi41UnpGBL9Xo2gk1T12LzCDVo3d79MEsM4xvkc`, seed `idl`), and `upgrade` is an alias for
-  writing a buffer and then setting it. Each attempt allocated an 8,845-byte buffer and left it
-  **partially written** — 6,532, then 7,495, then 7,495 non-zero bytes, so the zlib payload at
-  offset 96 will not decompress — while every transaction that did land returned `err: None`.
-  Non-deterministic truncation with no failing transaction points at write transactions being
-  silently dropped by the public devnet RPC, which a priority fee did not fix. Three abandoned
-  buffers now hold 0.06245208 SOL each (`6mkxvZp8SnBAfBg7iq3WQizT35QQJCZjpyyGFerkrWnm`,
+  **The onchain upload is unresolved, but the earlier root-cause diagnosis here was wrong and
+  has been retracted as of 2026-09-09.** It previously claimed devnet's public RPC was
+  "silently dropping" writes and leaving buffers "partially written." Direct inspection found
+  the opposite: buffer `3tpvsU1oSuSXy2JMvwJy85wfdoE2ynEnhHKWbRW2dPF6` (5,039 bytes) is
+  **complete and valid** — its zlib payload at offset 96 decompresses to the full IDL JSON (19
+  instructions, 5 accounts, 40 errors, program address matching), and once `docs` keys are
+  stripped from both sides it is byte-identical in structure to `target/idl/truststake.json`
+  (0 doc blocks vs. 48 stripped, 24 types on both sides, all discriminators equal). The upload
+  itself succeeded some time ago.
+
+  What actually fails is downstream of that. Anchor 1.1.2 doesn't perform the upload itself —
+  it shells out to `npx --package=@solana-program/program-metadata@0.5.1`, and Anchor's
+  "Failed to write metadata using buffer" is just a wrapper around that tool's own error.
+  Running the tool directly with `--export` (a dry run, no network call) builds one v0
+  transaction containing three instructions: a `ComputeBudget` price-set, `ProgramMetadata::
+  SetData` (points the metadata account at the buffer, signed by the upgrade authority), and
+  `ProgramMetadata::Trim` (shrinks the account from 8,548 to roughly 5,135 bytes, refunding the
+  excess rent). Being one transaction, this path is atomic — there is no partial-write state,
+  and a failed attempt cannot corrupt the live IDL. Actually executing it (not `--export`)
+  fails with `The provided transaction plan failed to execute` and submits nothing: the admin
+  wallet's most recent onchain transaction is still 2026-09-03, from before this attempt. The
+  failure is client-side, inside that JS tool, somewhere between building the plan and
+  submitting it to the network. **The root cause is not identified.** Treat this as an open,
+  bounded limitation, not outstanding debt requiring action — nothing here blocks correct
+  program operation, since the account it would update is cosmetic (see below), and the repo's
+  own copy of the IDL is now the reliable path for consumers regardless.
+
+  A sharper form of the existing buffer-safety warning: `program-metadata`'s `list-buffers`
+  command lists **five** addresses under our authority, and
+  `A1r5sAi41UnpGBL9Xo2gk1T12LzCDVo3d79MEsM4xvkc` is one of them — but that is the **live IDL
+  metadata account**, not a buffer. Running `close-buffer` against it would destroy the
+  published IDL. Only these three are genuinely dead, abandoned buffers, 0.06245208 SOL each:
+  `6mkxvZp8SnBAfBg7iq3WQizT35QQJCZjpyyGFerkrWnm`,
   `CHTWvALh4J7Wjr4GkrQihhu5KyRnsu6H7QGLLKNzCQRL`,
-  `H1P5eHX9a336bAWTtJ9HGxLwQU6q9sqVA8Geh9jRFcCN`). **Do not run `anchor idl close` to reclaim
-  them** — it takes a program ID and a seed, so it targets the live IDL metadata account, not a
-  buffer, and would destroy the published IDL. Worth trying next: a non-public devnet RPC
-  endpoint via `--provider.cluster <url>`, or `anchor idl create-buffer` / `write-buffer
-  --buffer <addr>` as two explicit steps so a partly-written buffer can be resumed instead of
-  re-allocated.
+  `H1P5eHX9a336bAWTtJ9HGxLwQU6q9sqVA8Geh9jRFcCN`. Reclaiming them, and any further attempt at
+  the onchain upload, are both deliberately parked — do not act on either without being asked.
 
   Meanwhile the published IDL is the 2026-08-24 one and is **safe to keep using**, verified by
   fetching and decompressing it and diffing against `target/idl/truststake.json`: all 19
@@ -293,7 +309,8 @@ See `docs/DESIGN-v2.md`, "What this design deliberately does not do" and "Honest
   `UnsupportedMintExtension` (6039), `TrustStakeError` having grown from 38 to 40; and one doc
   string on `DisputeRecord.closable_after` still describes the pre-fix formula. Nothing
   decodes wrongly, because both error variants were appended rather than inserted and no field
-  order or type moved.
+  order or type moved. With `idl/truststake.json` now in the repo, this stale onchain copy is
+  cosmetic rather than a real gap for anyone building from source.
 - **Before changing any protocol constant or any field on a stored account, search the
   entire project for every site that reads it, and report those sites before making the
   change.** `ACCOUNT_VERSION` was written at five call sites and read at zero for the

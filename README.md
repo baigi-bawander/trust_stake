@@ -172,7 +172,11 @@ real devnet SOL — program rent-exemption runs roughly 6,960 lamports per byte 
 `solana program show --buffers --url devnet` before retrying; there may be a paid-for buffer
 account worth resuming from instead of paying rent again from scratch.
 
-The IDL is a separate step, after any deploy:
+The IDL is also committed in-repo at [idl/truststake.json](idl/truststake.json) (see that
+directory's README) — the reliable path for anyone building from source, regardless of the
+onchain upload's state below.
+
+The onchain copy is a separate step, after any deploy:
 
 ```bash
 anchor idl upgrade 3Vc6M8Az9h2GtDmqqhQKURqTKKygNfekQq7PoJris6V2 \
@@ -181,13 +185,17 @@ anchor idl upgrade 3Vc6M8Az9h2GtDmqqhQKURqTKKygNfekQq7PoJris6V2 \
 
 Never `anchor idl init` — the IDL account already exists, and `init` fails against an account
 that's already allocated. **This upgrade command has failed on every attempt since
-2026-08-31**: the public devnet RPC has silently truncated the uploaded buffer rather than
-rejecting it outright, three times in a row (see CLAUDE.md's IDL entry for the full
-diagnosis and the abandoned buffers it left behind). The IDL currently published dates from
-2026-08-24 and is safe to keep using in the meantime — verified by fetching and decompressing
-it and diffing against `target/idl/truststake.json`: every instruction, account and shared
-error code matches, and it differs only by lacking names for two error codes added since and
-one stale doc string, none of which changes how anything decodes.
+2026-08-31**, but the earlier explanation for why (a devnet RPC silently truncating the
+upload) has been checked directly and retracted: the buffer it wrote is complete and valid,
+byte-for-byte equivalent to `target/idl/truststake.json`, so the upload itself succeeded. The
+failure is downstream, inside the JS tool Anchor 1.1.2 shells out to for this step, and its
+root cause is unidentified — see CLAUDE.md's IDL entry for the full diagnosis, including which
+of the tool's listed "buffers" is actually the live IDL account and must never be closed. The
+IDL currently published onchain dates from 2026-08-24 and is safe to keep using in the
+meantime — verified by fetching and decompressing it and diffing against
+`target/idl/truststake.json`: every instruction, account and shared error code matches, and it
+differs only by lacking names for two error codes added since and one stale doc string, none
+of which changes how anything decodes.
 
 ## Current tradeoffs
 
