@@ -36,11 +36,11 @@ renumbered across the four review passes; a Source column keeps the schemes apar
 | TS-03 | Security | Critical | Unstake wasn't gated on `committed`, and the cooldown was shorter than the complaint window, a clean exit scam | Fixed, the unstake mechanism was removed; `withdraw_stake` gates on `committed` directly |
 | TS-04 | Security | Critical | No `status == Open` guard let a dispute resolve repeatedly, draining the bond vault | Fixed, `status == Open` is the first check |
 | TS-05 | Security | Critical | The dispute PDA's `order_id` wasn't verified against the signed receipt's own field | Fixed, check 6 binds it to the seed |
-| TS-06 | Security | Critical | The arbiter check only proved the signer was arbiter of a caller-supplied marketplace account | Fixed, every account chained off `DisputeRecord` via `has_one` |
+| TS-06 | Security | Critical | The arbiter check only proved the signer was arbiter of a caller-supplied marketplace account | Fixed, `dispute` binds to `marketplace` via `has_one` (resolve_dispute.rs:45); permit, stake and vault derive from `dispute.seller`/`dispute.marketplace` PDA seeds instead of a caller-supplied account |
 | TS-07 | Security | High | `raise_dispute` didn't bind `receipt.seller`/`receipt.buyer` to the accounts passed in | Fixed, check 6 |
 | TS-08 | Security | High | The daily slash cap was self-set by the marketplace it restrained, and its base was inflatable | Fixed, the daily cap was removed entirely |
 | TS-09 | Security | High | `update_marketplace` could retroactively rewrite live permit terms | Fixed, permit terms freeze at grant |
-| TS-10 | Security | High | Payout destinations in `resolve_dispute` weren't bound to `dispute.buyer`/`dispute.seller` | Fixed, bound via `has_one` |
+| TS-10 | Security | High | Payout destinations in `resolve_dispute` weren't bound to `dispute.buyer`/`dispute.seller` | Fixed, bound via PDA seeds derived from `dispute.seller`/`dispute.marketplace` (permit, stake, vault) and `token::authority = dispute.buyer` (buyer_token_account), not `has_one` |
 | TS-11 | Security | High | The permit cap was a TOCTOU race between raise and resolve | Fixed, payout clamps to remaining allowance at resolve time, not checked at raise time |
 | TS-12 | Security | High | Repeat `request_unstake` without resetting the timer could bypass the cooldown | Superseded, the unstake/cooldown mechanism no longer exists |
 | TS-13 | Security | High | A permit could be shrunk to evade a slash while a dispute against it was pending | Fixed, `release_permit` requires `open_disputes == 0` |

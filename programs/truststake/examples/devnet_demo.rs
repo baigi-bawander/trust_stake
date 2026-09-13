@@ -403,7 +403,7 @@ fn decide_permit_grant(lifecycle_done: bool, permit_exists: bool) -> PermitGrant
 /// a cached `revoked_at` from a permit's PRIOR era at this same PDA must
 /// never be handed out as if it described the CURRENT, still-unrevoked
 /// permit -- and revoking on that era's behalf isn't this run's call
-/// either (item 8: a permit this run did not grant isn't this run's to
+/// either (D1: a permit this run did not grant isn't this run's to
 /// act on).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PermitRevokeDecision {
@@ -429,7 +429,7 @@ fn decide_permit_revoke(lifecycle_done: bool, live_revoked_at: Option<i64>, cach
 /// exactly the D1-mirror bug: it cannot distinguish "released, done" from
 /// "never granted." `SkipUnrevoked` is what keeps this guard from ever
 /// calling release on a permit that ISN'T revoked -- true both mid-flow
-/// (revoke hasn't run yet this invocation) and for the stray shape item 8
+/// (revoke hasn't run yet this invocation) and for the stray shape D1
 /// describes (a previous bug re-granted at this PDA after release; this
 /// permit's current era isn't this guard's to finish).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2539,7 +2539,7 @@ fn stage1_11_seller_b(chain: &Chain, progress: &mut Value, roster: &StageRoster,
 /// trusting a cached value blindly -- the ensure_revoked-staleness fix: a
 /// cached value from an EARLIER era at this same PDA (left behind by D1's
 /// bug) must never be reported as this era's revocation time, and this run
-/// doesn't revoke on that stray era's behalf either (item 8: a permit this
+/// doesn't revoke on that stray era's behalf either (D1: a permit this
 /// run did not grant isn't this run's to act on).
 fn ensure_revoked(
     chain: &Chain,
@@ -2895,7 +2895,7 @@ fn try_close_dispute(chain: &Chain, stranger: &Keypair, dispute: Pubkey, label: 
 // this script's own decision logic gets tested at all. Named regressions
 // map onto docs/DEMO-SCRIPT-FINDINGS.md's defect list (D1, D1-mirror,
 // ensure_revoked staleness, D2, D2-sibling, D3, the two latent D1 siblings,
-// and item 8's stray-permit tolerance).
+// and D1's stray-permit tolerance).
 #[cfg(test)]
 mod tests {
     use super::*;
