@@ -2,6 +2,22 @@
 
 Staked reputation for peer-to-peer marketplaces on Solana: a seller locks collateral, and a marketplace's arbiter can slash it to pay a buyer who was scammed.
 
+## The problem
+
+On peer-to-peer marketplaces such as OLX, Facebook Marketplace groups, and WhatsApp selling, a buyer has no reliable way to tell whether a seller will actually deliver. Reviews can be faked or deleted, new sellers have no history at all, and a seller who scams someone can abandon the account and start again with a clean profile. Nothing is at stake, so nothing backs the promise.
+
+This is not hypothetical. ONDC, India's government-backed open commerce network, projected at $80B+ of commerce across 15M+ sellers, [published this exact gap as an open problem](https://superteam.fun/build/ideas/reputation-based-slashing), and its own ecosystem research still lists reliable dispute resolution as unsolved.
+
+## Why a blockchain helps here
+
+The useful property is not "decentralization" in the abstract. It is that the seller's incentive is enforced by something the marketplace cannot quietly reverse and the seller cannot delete:
+
+- Collateral is real money, locked in a program-controlled vault.
+- A slash moves that money to the wronged buyer automatically.
+- The incident count lives on the seller's stake account, both how many disputes it has faced and how many it has lost. Walking away means abandoning the collateral and starting from zero, which is the point.
+
+Solana specifically, because a trust layer only works if checking and updating it is effectively free. At sub-cent transaction fees this can run on every transaction rather than a sampled few.
+
 ## Deployment
 
 | Cluster | Program ID | Data length |
@@ -28,7 +44,7 @@ solana-verify verify-from-repo https://github.com/baigi-bawander/trust_stake \
 - The command ends with a prompt asking whether to upload verification data onchain. Answering `n` completes the check and writes nothing.
 - Commit `a1fb8e9` is cited because it's the commit whose tree was actually verified; later commits touch only documentation, not program source, so the deployed binary still matches it.
 
-Run on 2026-09-10, this reported "Program hash matches" with hash `4d93d69683c40d52eeb389d5db5d7e140831bd97c9a1e3bc9ccfb2fcae2f08fd` on both sides.
+Run on 2026-09-10, this reported "Program hash matches" with hash `4d93d69683c40d52eeb389d5db5d7e140831bd97c9a1e3bc9ccfb2fcae2f08fd` on both sides. That is `solana-verify`'s own hash, which strips trailing zero padding before hashing; a plain `sha256sum` of the same `target/deploy/truststake.so` gives `101a10d8145870f77a2b79f66d41c8af85252a6678a21083fcf4316551369bfc`, the figure recorded in CLAUDE.md and idl/README.md, and both describe the same bytes.
 
 ## How it works
 

@@ -883,9 +883,10 @@ fully-backed check, `revoke_permit`, `release_permit`, `release_permit_early`,
 
 **Phase 4: proof and docs.** Close any remaining gaps in the test matrix, measure the real
 `raise_dispute` transaction size, rewrite `examples/devnet_demo.rs` to walk two
-marketplaces, redeploy, then update `README.md` and `CLAUDE.md`. The CLAUDE.md "Deliberate
-simplifications" list and the README "Prototype scope" section both go stale the moment
-Phase 2 lands, and CLAUDE.md explicitly asks for them to be updated together.
+marketplaces, redeploy, then update `README.md` and `CLAUDE.md`. This document's own
+"Honest limitations, stated rather than papered over" section is the canonical list of
+tradeoffs and goes stale the moment Phase 2 lands; README's "Current tradeoffs" section
+tracks it.
 
 ---
 
