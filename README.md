@@ -33,7 +33,7 @@ solana-verify verify-from-repo https://github.com/baigi-bawander/trust_stake \
   --url https://api.devnet.solana.com \
   --program-id 3Vc6M8Az9h2GtDmqqhQKURqTKKygNfekQq7PoJris6V2 \
   --library-name truststake \
-  --commit-hash a1fb8e9 \
+  --commit-hash v0.1.0-devnet \
   --base-image quay.io/ottersec/anchor:v1.1.2
 ```
 
@@ -42,9 +42,9 @@ solana-verify verify-from-repo https://github.com/baigi-bawander/trust_stake \
 - `--library-name truststake` is required because the workspace also contains a test fixture program, `cpi_wrapper`.
 - `anchor verify` does not work here: it fails to parse a `solana-program` version from `Cargo.lock`, since this program depends on `anchor-lang`/`anchor-spl` rather than `solana-program` directly.
 - The command ends with a prompt asking whether to upload verification data onchain. Answering `n` completes the check and writes nothing.
-- Commit `a1fb8e9` is cited because it's the commit whose tree was actually verified; later commits touch only documentation, not program source, so the deployed binary still matches it.
+- Tag `v0.1.0-devnet` is the tree this was run against. Everything the compiled program depends on is inside it: the program source, `Cargo.lock`, and the Rust version pinned in `rust-toolchain.toml`.
 
-Run on 2026-09-10, this reported "Program hash matches" with hash `4d93d69683c40d52eeb389d5db5d7e140831bd97c9a1e3bc9ccfb2fcae2f08fd` on both sides. That is `solana-verify`'s own hash, which strips trailing zero padding before hashing; a plain `sha256sum` of the same `target/deploy/truststake.so` gives `101a10d8145870f77a2b79f66d41c8af85252a6678a21083fcf4316551369bfc`, the figure recorded in CLAUDE.md and idl/README.md, and both describe the same bytes.
+Run on 2026-09-10 and again on 2026-09-17, this reported "Program hash matches" with hash `4d93d69683c40d52eeb389d5db5d7e140831bd97c9a1e3bc9ccfb2fcae2f08fd` on both sides. That is `solana-verify`'s own hash, which strips trailing zero padding before hashing; a plain `sha256sum` of the same `target/deploy/truststake.so` gives `101a10d8145870f77a2b79f66d41c8af85252a6678a21083fcf4316551369bfc`, the figure recorded in CLAUDE.md and idl/README.md, and both describe the same bytes.
 
 ## How it works
 
