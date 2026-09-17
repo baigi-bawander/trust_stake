@@ -9,7 +9,7 @@ This file is the input to the demo-script fix task, so the analysis is not re-de
 
 ## The verdict
 
-Five surprises across four runs. Zero were program faults; in three of them the program was
+Four surprises across four runs. Zero were program faults; in three of them the program was
 the thing that stopped the script.
 
 | Date | Surprise | Cause | Program's part |
@@ -18,7 +18,6 @@ the thing that stopped the script.
 | 08-31 | Step 5 printed `320 committed (200 + 200)` | Printed permit caps beside true `committed` | Not involved |
 | 09-01 | Step 1.6 staked an extra 147.50 | Guard targets pre-grant free collateral, evaluated post-grant | Correct: a legal `add_stake` |
 | 09-03 | Step 1.11 re-granted a released permit; stage 2 then died | Guard asks "does the permit account exist," which cannot distinguish never-granted from granted-then-released | Caught it, `PermitNotRevoked` (6011) |
-| n/a | Dashboard total 10.50 high | Frontend summed decided bonds | Not involved |
 
 Invariants re-checked against live devnet 2026-09-03, all exact: `committed == sum(permit
 remaining)` per seller (50 = 50, 470 = 470); `committed <= staked`; `stake_vault balance ==
