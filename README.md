@@ -114,8 +114,7 @@ The IDL is committed at [idl/truststake.json](idl/truststake.json); see [idl/REA
 ## Status
 
 - 152 tests passing (`cargo test` from `programs/truststake/`).
-- All 19 handlers are covered by the test suite, and 17 have also run in a real transaction on devnet across three completed demo stages.
-- The remaining two, `expire_dispute` and `close_dispute`, are gated on real 30-day waits completing 2026-09-23 and 2026-09-30.
+- All 19 handlers are covered by the test suite, and all 19 have also run in a real transaction on devnet, across four completed demo stages ending 2026-10-11.
 
 Full test plan and devnet transaction signatures: [docs/TESTING.md](docs/TESTING.md).
 

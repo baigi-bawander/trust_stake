@@ -494,8 +494,8 @@ walk above already proved onchain (`initialize_config`, `register_marketplace`,
 `resolve_dispute`), leaves `propose_config_authority`, `accept_config_authority`,
 `update_marketplace`, `propose_marketplace_authority`, `accept_marketplace_authority`,
 `increase_permit`, `revoke_permit`, `release_permit`, `release_permit_early`,
-`expire_dispute` and `close_dispute` -- eleven, all reached below. Stages 1-3 have now run for
-real; stage 4 is gated on 2026-09-23 and 2026-09-30 (CLAUDE.md's "Current state"). **Do not
+`expire_dispute` and `close_dispute` -- eleven, all reached below. All four stages have now run for
+real (CLAUDE.md's "Current state"). **Do not
 invent a signature below** -- add one only after running that stage for real and confirming it
 with `solana confirm -v <signature>`.
 
@@ -543,14 +543,11 @@ A second seller stakes, grants two permits, and revokes both -- the first live u
 
 - `release_permit(seller_b x CashDesk)`: `29YNKJG63FFMEpw1dGVKtERJmYEgNmCwx9BffSV8YWMFuNsKa86cu2K9SbB78n14o7DmCeGYNdCxgjxmNTTzMh37` -- [Explorer](https://explorer.solana.com/tx/29YNKJG63FFMEpw1dGVKtERJmYEgNmCwx9BffSV8YWMFuNsKa86cu2K9SbB78n14o7DmCeGYNdCxgjxmNTTzMh37?cluster=devnet). The ordinary path, live: `now >= revoked_at + complaint_window` (CashDesk's 2-day window) holds and `open_disputes == 0`, so the permit closes and its rent returns to seller_b. Run explicitly via `--stage 3`, after a plain run earlier the same day hit the guard bug `docs/DEMO-SCRIPT-FINDINGS.md` calls D1 (fixed since, commit `48dbbf1`) and exited before reaching this stage.
 
-### Stage 4 (not yet run, due 2026-09-23 and 2026-09-30)
+### Stage 4 (ran 2026-10-11, slots 509985564 to 509985620)
 
-`close_dispute` needs the original CashDesk dispute from the Step 7 walk above to clear its
-`closable_after` mark, due 2026-09-23. `expire_dispute` needs the SwiftMarket dispute from 1.9
-to sit undecided 30 days past filing, and `close_dispute` needs the CashDesk second dispute
-from 1.10 to clear its own `closable_after` mark -- both due 2026-09-30. **Do not invent a
-signature here** -- add one only after running that stage for real and confirming it with
-`solana confirm -v <signature>`.
+- `expire_dispute(SwiftMarket)`: `3VZFE8adtGEet3dLTAP7hHHuxgCjwrPsQQBGcrVFaBDXUhb7T1chYJdEgZsYR5JcVT8Ee7ys6aWTQpwZx3MLfSbw` -- [Explorer](https://explorer.solana.com/tx/3VZFE8adtGEet3dLTAP7hHHuxgCjwrPsQQBGcrVFaBDXUhb7T1chYJdEgZsYR5JcVT8Ee7ys6aWTQpwZx3MLfSbw?cluster=devnet). The permissionless liveness path, live: a funded stranger called it, not the arbiter and not either authority, 41 days after the dispute was filed. Status moved to Abandoned, nobody was paid, the marketplace took its permanent mark, and SwiftMarket's permit `open_disputes` went 1 to 0, lifting the freeze.
+- `close_dispute(CashDesk second dispute, rejected)`: `2TYMBejG9vyJeduKxxmqKx33cmKUrLKXww4HHixJ4yHThFqCiyMLyd82dAFLPtKDp4iScGqo2wz3RbXbHrTC3Q2G` -- [Explorer](https://explorer.solana.com/tx/2TYMBejG9vyJeduKxxmqKx33cmKUrLKXww4HHixJ4yHThFqCiyMLyd82dAFLPtKDp4iScGqo2wz3RbXbHrTC3Q2G?cluster=devnet). Permissionless once `status != Open` and `now >= closable_after`, both of which held, so the record closed and its rent returned to the buyer.
+- `close_dispute(CashDesk original dispute, upheld)`: `2Qeukd8Tc44VuVe1Lk5QdTWosoc3tqNs6V9V9dMxh63rdoT25hfLsRAb8oA68BC93mntUpGmzP8akomY6cg1Z8Bm` -- [Explorer](https://explorer.solana.com/tx/2Qeukd8Tc44VuVe1Lk5QdTWosoc3tqNs6V9V9dMxh63rdoT25hfLsRAb8oA68BC93mntUpGmzP8akomY6cg1Z8Bm?cluster=devnet). The same path for an upheld record, 48 days after filing: the slash had already moved the collateral at resolution time, so closing only reclaims the record's rent, again to the buyer.
 
 ---
 

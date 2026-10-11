@@ -22,12 +22,10 @@ Staked reputation for peer-to-peer marketplaces on Solana. Full pitch, architect
   plus a real devnet run with every signature recorded in
   [docs/TESTING.md](docs/TESTING.md).
 - **Demo:** the four-stage devnet walk (`examples/devnet_demo.rs`, see "Real devnet demo"
-  below) has completed stages 1-3, stage 1 on 2026-08-31, stage 2 on 2026-09-01, stage 3 on
-  2026-09-03 (slot 492481349), putting 17 of the 19 handlers through a real transaction on
-  devnet. Only `expire_dispute` and `close_dispute` remain, across three `DisputeRecord`s: the
-  original CashDesk dispute from the Step 7 walk clears for `close_dispute` on 2026-09-23, and
-  the SwiftMarket dispute (`expire_dispute`) and CashDesk's second dispute (`close_dispute`)
-  both clear on 2026-09-30. `docs/TESTING.md`'s four-stage section has the signatures.
+  below) has completed all four stages: stage 1 on 2026-08-31, stage 2 on 2026-09-01, stage 3
+  on 2026-09-03 (slot 492481349), stage 4 on 2026-10-11 (slots 509985564 to 509985620). All 19
+  handlers have now run in a real transaction on devnet. `docs/TESTING.md`'s four-stage
+  section has the signatures.
 - **Repo:** `https://github.com/baigi-bawander/trust_stake`
 - **Upgrade authority / admin wallet:** `~/.config/solana/id.json` (pubkey
   `EE4skmuEcaL4ybktFhp7sUfr84to78KQKoNsAAu8L7jG`) is simultaneously the program's upgrade
@@ -53,9 +51,11 @@ prototype with a multi-tenant protocol (SPL-token collateral, unstaking, no sing
 **v2 is deployed to devnet**, at the program ID above. `Config` is initialized (chain_id 1, a
 demo-created 6-decimal test mint), and `examples/devnet_demo.rs` has since built up real state
 across three marketplaces (CashDesk, 2-day window/1,000 bps; PixelBazaar, 7-day/300 bps;
-SwiftMarket, 30-day/0 bps), two `SellerStake`s, four `SlashPermit`s, and three
-`DisputeRecord`s (one upheld, one rejected, one still open). `getProgramAccounts` against the
-program ID returns 15 accounts in total: those twelve, the one live `Config`, and two
+SwiftMarket, 30-day/0 bps), two `SellerStake`s, five `SlashPermit`s (two of them re-granted
+after release by the guard defect `docs/DEMO-SCRIPT-FINDINGS.md` calls D1), and one
+`DisputeRecord` (abandoned; stage 4 closed the upheld and the rejected one).
+`getProgramAccounts` against the program ID returns 14 accounts in total: those eleven, the
+one live `Config`, and two
 unreadable v1-era leftovers (a 41-byte `Config` and a 53-byte `SellerStake`, sized to match the
 v1 structs at `git show 52ae454:programs/truststake/src/state.rs`) that the in-place upgrade
 left behind and that can never be closed, since the v1 code that owned them no longer exists at
