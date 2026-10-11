@@ -60,12 +60,15 @@ jobs:
             ~/.cargo/.crates2.json
             ~/.cache/solana
             target
-          # anchor-cli's pinned version is part of the key so a future
-          # version bump invalidates the cache instead of silently
-          # reusing a stale binary; Cargo.lock covers everything else.
-          key: ${{ runner.os }}-cargo-anchor1.1.2-${{ hashFiles('**/Cargo.lock') }}
+          # anchor-cli's and the Agave CLI's pinned versions are both part of
+          # the key so a future version bump invalidates the cache instead of
+          # silently reusing a stale binary or a stale platform-tools tree;
+          # Cargo.lock covers everything else. The Agave half was added after
+          # a restored ~/.cache/solana holding platform-tools v1.52 broke this
+          # job on 2026-10-11; see the install step below.
+          key: ${{ runner.os }}-cargo-anchor1.1.2-agave4.0.2-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-anchor1.1.2-
+            ${{ runner.os }}-cargo-anchor1.1.2-agave4.0.2-
 
       # anchor-cli 1.1.2 will not compile under this repo's rust-toolchain.toml
       # pin (1.89.0): a transitive dependency of the CLI, cargo-platform
@@ -109,9 +112,19 @@ jobs:
       - name: Install anchor-cli 1.1.2
         run: cargo +stable install anchor-cli --version 1.1.2 --locked
 
+      # Pinned rather than `stable`, for the same reason rust-toolchain.toml
+      # pins 1.89.0. Agave 4.3.0 changed cargo-build-sbf's default from
+      # `--arch v0` to `--arch v3`, and the program deployed at
+      # 3Vc6M8Az9h2GtDmqqhQKURqTKKygNfekQq7PoJris6V2 is v0 (ELF e_flags 0x0).
+      # A moving channel would silently compile a different architecture than
+      # the one running on devnet, and on 2026-10-11 it broke this job
+      # outright: 4.3.0 selected SBPFv3 against the platform-tools v1.52 the
+      # cache above had restored, which cannot produce it. 4.0.2 is the
+      # version that built the deployed binary and still defaults to v0. See
+      # CLAUDE.md's "Known gotchas" for the SBPFv3 rebuild this defers.
       - name: Install the Solana CLI (Agave)
         run: |
-          curl -sSfL https://release.anza.xyz/stable/install -o /tmp/solana-install.sh
+          curl -sSfL https://release.anza.xyz/v4.0.2/install -o /tmp/solana-install.sh
           sh /tmp/solana-install.sh
           echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
 

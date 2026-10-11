@@ -381,3 +381,14 @@ MIT-licensed. A private fork must not call it unmodified.
   prior slash can exercise this class of bug at all. A future step written against "amount X is
   always safe/unsafe relative to committed" should be treated as suspect until proven to read
   `staked`/`committed` live at the point it runs.
+- **The deployed program is SBPFv0, and newer toolchains no longer default to that.** Agave
+  4.3.0 changed `cargo-build-sbf`'s default from `--arch v0` to `--arch v3`. The binary live at
+  the program ID has `e_flags = 0x0`, confirmed by `solana program dump` on 2026-10-12, and the
+  pinned local toolchain (solana-cli 4.0.2, `cargo-build-sbf 4.0.0`, platform-tools v1.53)
+  still defaults to v0 and reproduces it byte for byte. CI pins the same version for that
+  reason: `stable` broke the build on 2026-10-11 by selecting SBPFv3 against a cached
+  platform-tools v1.52, which cannot produce it. SIMD-0500 disables deployment of SBPFv0, v1
+  and v2, so a rebuild targeting v3 is required before any mainnet deployment, and before any
+  further upgrade once that lands. That rebuild needs Anchor 1.2.0 or later (this repo pins
+  1.1.2), produces a different binary, and invalidates both the hashes and the `solana-verify`
+  command published in README.md. Do not start it as a side effect of another task.
